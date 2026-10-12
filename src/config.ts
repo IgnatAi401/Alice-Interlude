@@ -1,6 +1,260 @@
-import type { Config, GroupChatRule, TelegramAccountRule } from './service'
-import { DEFAULT_MEMORY_CONFIG } from './service'
 import { DEFAULT_ALTER_SYSTEM_CONFIG } from './alter'
+import { GroupWillingnessConfig } from './group-willingness'
+import { ModelConfig } from './narrator'
+import { AgencyConfig, AlterSystemConfig } from './types'
+
+export interface Config {
+  /** Immersive operation that suppresses logs and management commands. */
+  blindMode?: BlindModeConfig
+  model: ModelConfig
+  runtime: RuntimeConfig
+  storyDefaults: StoryDefaults
+  logging: LoggingConfig
+  memory?: Partial<MemoryConfig>
+  sharedStory?: SharedStoryConfig
+  /** Optional, read-only browser observations using local macOS Chrome. */
+  browser?: BrowserConfig
+  /** Non-secret profiles; authorization comes only from environment chat ids. */
+  telegram?: TelegramConfig
+  alterSystem?: AlterSystemConfig
+  agency?: AgencyConfig
+}
+
+export interface BlindModeConfig {
+  enabled: boolean
+  /** Periodic, intentionally minimal health signal while all other HDSI logs stay hidden. */
+  healthReportMinutes: number
+}
+
+export interface TelegramAccountRule {
+  chatId: string
+  label: string
+  enabled: boolean
+  /** Optional identity fields for a whitelisted private-message user. */
+  personId?: string
+  profile?: string
+  relationship?: string
+}
+
+export interface TelegramConfig {
+  userAccounts: TelegramAccountRule[]
+  /** Group options never grant access without the environment whitelist. */
+  groupChats?: GroupChatRule[]
+}
+
+export interface GroupChatRule {
+  groupId: string
+  label: string
+  enabled: boolean
+  purpose: string
+  characterRole: string
+  responseMode: 'mention-only' | 'always'
+  contextLimit: number
+  debounceSeconds: number
+  cooldownSeconds: number
+  willingness?: Partial<GroupWillingnessConfig>
+}
+
+export interface MemoryConfig {
+  enabled: boolean
+  backgroundIntervalMinutes: number
+  maxStoriesPerCompactionRun: number
+  sceneEntryThreshold: number
+  sceneCharacterThreshold: number
+  compactionEntryLimit: number
+  compactionCharacterLimit: number
+  sceneHookCharacters: number
+  sceneSummaryCharacters: number
+  arcSummaryCharacters: number
+  recentEntryLimit: number
+  factLimit: number
+  factContentCharacters: number
+  factImportanceWeight: number
+  factConfidenceWeight: number
+  factRecencyWeight: number
+  unresolvedWeight: number
+  statePatchConfidenceThreshold: number
+  majorStatePatchConfidenceThreshold: number
+  statePatchMinEvidence: number
+  /** Minimum independent narrative turns for a minor overlay change. */
+  statePatchMinTurns?: number
+  /** Minimum distinct calendar days represented by minor-patch evidence. */
+  statePatchMinDays?: number
+  /** Cooldown between stable overlay changes on the same target/path. */
+  statePatchCooldownHours?: number
+  autoApplyStatePatches: boolean
+  allowMajorStateChanges: boolean
+  maxFactsPerStory: number
+  /** Keep short-lived dramatic aftereffects as context for later writing. */
+  activeConsequencesEnabled: boolean
+  /** Maximum active consequences carried into one main-narrative prompt. */
+  activeConsequencePromptLimit: number
+  /** Longest permitted lifetime of one consequence; protects canon from drift. */
+  activeConsequenceMaxDays: number
+  /** Used when the narrator omits a precise strength for a valid consequence. */
+  activeConsequenceDefaultStrength: number
+  overlayCompressionEnabled?: boolean
+  overlayRecentDays?: number
+  overlayMonthlyAfterDays?: number
+  overlayWeeklyWindowDays?: number
+  overlayMonthlyWindowDays?: number
+  overlayWeeklySummaryCharacters?: number
+  overlayMonthlySummaryCharacters?: number
+}
+
+export interface RuntimeConfig {
+  captureDirectMessages: boolean
+  autoCreate: boolean
+  ignoreCommandMessages: boolean
+  allowProactiveMessages: boolean
+  /** Minimum narrator-declared willingness for a background-initiated contact. */
+  proactiveWillingnessThreshold?: number
+  sweepIntervalMinutes: number
+  minimumAdvanceMinutes: number
+  maxStoriesPerSweep: number
+  contextEntryLimit: number
+  memoryLimit: number
+  maxScriptCharacters: number
+  maxMessageCharacters: number
+  minimumDelayedReplySeconds: number
+  maximumDelayedReplyMinutes: number
+  cancelDelayedRepliesOnUserMessage: boolean
+  /** Retry a user turn after a transient narrative-provider failure. */
+  narrativeRetryDelaySeconds?: number
+  /** Maximum automatic retries per failed user turn; 0 disables retry. */
+  narrativeRetryMaxAttempts?: number
+  /** Split model reply.content into multiple Telegram messages. */
+  splitReplyMessages?: boolean
+  messageSeparator?: string
+  typingBaseDelaySeconds?: number
+  typingCharactersPerSecond?: number
+  typingMaxDelaySeconds?: number
+  /** Wait after the newest user message before starting a writing request. */
+  userMessageDebounceSeconds?: number
+  /** Automatic life-writing schedule. */
+  autoAdvanceEnabled?: boolean
+  autoAdvanceIntervalMinutes?: number
+  autoAdvanceJitterMinutes?: number
+  /** Short life-writing passes after a conversation, in minutes. */
+  conversationFollowUpMinutes?: number[]
+  /** Small random offset applied to each short conversation follow-up. */
+  conversationFollowUpJitterMinutes?: number
+  restWindows?: RestWindow[]
+}
+
+export interface BrowserConfig {
+  enabled: boolean
+  /** Immediate browsing is opt-in because it intentionally adds one more model/browser round trip. */
+  mode: 'deferred-only' | 'allow-immediate'
+  allowSearch: boolean
+  allowVisit: boolean
+  searchUrlTemplate: string
+  allowedDomains: string[]
+  blockedDomains: string[]
+  maxConcurrentPages: number
+  /** Bound work per background sweep so a backlog cannot hold the story queue for minutes. */
+  maxResearchPerSweep: number
+  navigationTimeout: number
+  waitUntil: 'domcontentloaded' | 'networkidle2'
+  maxTextCharacters: number
+  maxExcerptCharacters: number
+  maxObservationsInPrompt: number
+  cacheMinutes: number
+  allowGroupTriggeredResearch: boolean
+  logObservationPreview: boolean
+}
+
+export interface SharedStoryConfig {
+  /** Enroll an allowed account into an existing main story on its first DM. */
+  autoEnrollParticipants: boolean
+  /** Allow one incoming message to cause an explicitly justified message to another account. */
+  allowCrossConversationMessages: boolean
+  /** Send other participants' relationship/profile details to the model provider. */
+  shareParticipantDetails: boolean
+  /** Hard cap for cross-account messages produced by one narrative turn. */
+  maxCrossConversationActions: number
+  /** Number of other relationship summaries sent to the main narrator. */
+  participantContextLimit: number
+  /** Empty allows all authorized private chats to run management commands. */
+  managerAccounts: string[]
+}
+
+export interface RestWindow {
+  enabled: boolean
+  label: string
+  start: string
+  end: string
+  minIntervalMinutes: number
+  maxIntervalMinutes: number
+}
+
+export interface StoryDefaults {
+  characterName: string
+  characterProfile: string
+  perspective: string
+  userProfile: string
+  relationship: string
+  world: string
+  supportingCast: string
+  location: string
+  style: string
+  timezone: string
+}
+
+export interface LoggingConfig {
+  level: 'silent' | 'error' | 'warn' | 'info' | 'debug'
+  /** Controls how much normal operational activity is written at info level. */
+  verbosity?: 'summary' | 'standard' | 'diagnostic'
+  format: 'compact' | 'detailed' | 'layered'
+  /** Apply semantic ANSI colors in the terminal. */
+  colors?: boolean
+  /** Select an ANSI palette for dark or light terminal themes. */
+  colorTheme?: 'dark' | 'light'
+  /** Show fixed action kaomoji; false uses compact symbols instead. */
+  kaomoji?: boolean
+  logScriptPreview: boolean
+  /** Emit user-visible incoming/outgoing message bodies to the terminal log. */
+  logMessageContent?: boolean
+  previewLength: number
+}
+
+export const DEFAULT_MEMORY_CONFIG: MemoryConfig = {
+  enabled: true, backgroundIntervalMinutes: 10, maxStoriesPerCompactionRun: 20,
+  sceneEntryThreshold: 16, sceneCharacterThreshold: 10_000, compactionEntryLimit: 80,
+  compactionCharacterLimit: 32_000, sceneHookCharacters: 2_000, sceneSummaryCharacters: 8_000,
+  arcSummaryCharacters: 12_000, recentEntryLimit: 30, factLimit: 20, factContentCharacters: 4_000,
+  factImportanceWeight: 0.5, factConfidenceWeight: 0.35, factRecencyWeight: 0.15, unresolvedWeight: 0.2,
+  statePatchConfidenceThreshold: 0.82, majorStatePatchConfidenceThreshold: 0.95,
+  statePatchMinEvidence: 3, statePatchMinTurns: 3, statePatchMinDays: 2, statePatchCooldownHours: 72,
+  autoApplyStatePatches: true, allowMajorStateChanges: true, maxFactsPerStory: 200,
+  activeConsequencesEnabled: true, activeConsequencePromptLimit: 6, activeConsequenceMaxDays: 7,
+  activeConsequenceDefaultStrength: 0.55, overlayCompressionEnabled: true, overlayRecentDays: 2,
+  overlayMonthlyAfterDays: 10, overlayWeeklyWindowDays: 5, overlayMonthlyWindowDays: 10,
+  overlayWeeklySummaryCharacters: 1_600, overlayMonthlySummaryCharacters: 2_400,
+}
+
+/** Programmatic callers may omit numeric fields. Normalise them so one
+ * malformed browser option cannot disable all due research or break the page semaphore. */
+export function resolveBrowserConfig(value?: Partial<BrowserConfig>): BrowserConfig {
+  const merged: BrowserConfig = { ...DEFAULT_CONFIG.browser!, ...value }
+  return {
+    ...merged,
+    maxConcurrentPages: Math.max(1, Math.min(4, Number(merged.maxConcurrentPages) || 1)),
+    maxResearchPerSweep: Math.max(1, Math.min(20, Number(merged.maxResearchPerSweep) || 1)),
+    navigationTimeout: Math.max(1_000, Number(merged.navigationTimeout) || 15_000),
+    maxTextCharacters: Math.max(500, Number(merged.maxTextCharacters) || 12_000),
+    maxExcerptCharacters: Math.max(200, Number(merged.maxExcerptCharacters) || 3_000),
+    maxObservationsInPrompt: Math.max(1, Math.min(20, Number(merged.maxObservationsInPrompt) || 4)),
+    cacheMinutes: Math.max(0, Number(merged.cacheMinutes) || 0),
+  }
+}
+
+export function resolveBlindModeConfig(value?: Partial<BlindModeConfig>): BlindModeConfig {
+  return {
+    enabled: value?.enabled === true,
+    healthReportMinutes: Math.max(1, Math.min(1_440, Math.floor(value?.healthReportMinutes ?? 10))),
+  }
+}
 
 export const DEFAULT_CONFIG: Config = {
   blindMode: { enabled: false, healthReportMinutes: 10 },

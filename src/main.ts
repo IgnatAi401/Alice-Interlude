@@ -27,7 +27,7 @@ export async function start() {
   const runtime = new Runtime(storage, config.logging.level === 'debug')
   const bot = new TelegramBot(env, storage, config.model.vision?.enabled === true)
   runtime.bots.push(bot)
-  const service = new InterludeService(runtime, config)
+  const service = new InterludeService(runtime, config, env)
   if (!config.blindMode?.enabled) registerCommands(runtime, service)
   let stopPromise: Promise<void> | undefined
   const stop = () => stopPromise ??= (async () => {

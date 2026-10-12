@@ -20,3 +20,6 @@ credentials.*
 *.p12
 *.pfx
 .DS_Store
+
+# 构建产物，由 pnpm build 生成
+lib/

@@ -1,223 +1,20 @@
-import { Runtime, Logger, MessageSession as Session, Time } from './runtime'
-import { createCompactor, createNarrator, hasAnthropicCredentials, ModelConfig } from './narrator'
-import { isAllowedTelegramSession, readTelegramEnvironment, telegramChatId } from './telegram'
-import {
-  advanceAlterSystem, alterAnalysisCoolingDown, calculateAlterThreshold, completeAlterAnalysis,
-  emotionalOffsetForPrompt, normalizeAlterSystemState, normalizeAlterValue, resolveAlterSystemConfig,
-  AlterTurnResult,
-} from './alter'
-import {
-  activeAgencyWindow, evaluateAgencyCapacity, normalizeAgencyWindowDraft, normalizeAgencyWindowState,
-  normalizeProactiveContact, proactiveCandidateFingerprint, proactiveRecheckAt, resolveAgencyConfig,
-} from './agency'
-import { HDS_INTERLUDE_VERSION } from './meta'
+import { activeAgencyWindow, evaluateAgencyCapacity, normalizeAgencyWindowDraft, normalizeProactiveContact, proactiveCandidateFingerprint, proactiveRecheckAt, resolveAgencyConfig } from './agency'
+import { AlterTurnResult, advanceAlterSystem, alterAnalysisCoolingDown, calculateAlterThreshold, completeAlterAnalysis, emotionalOffsetForPrompt, normalizeAlterSystemState, resolveAlterSystemConfig } from './alter'
+import { BlindModeConfig, Config, DEFAULT_MEMORY_CONFIG, GroupChatRule, MemoryConfig, SharedStoryConfig, resolveBlindModeConfig } from './config'
+import { automaticDeliveryFromPayload, consequenceExpiresAt, consequenceStrength, followUpExpiresAt, hasCompactionEvidence, hasRequiredNarrativeScript, inferredFollowUpCommitment, interactionPromisesFollowUp, isActiveConsequence, isActiveConsequenceDraft, isAutomaticNarrativePhase, mergeDeliverySummary, normalizeDecision, normalizeFollowUpSummary, normalizeGroupVisibleReply, normalizeIntentUpdates, normalizeInteraction, normalizeScenePresenceDrafts, requiresVisibleReplyRecovery, visibleReplyMode } from './decision'
+import { GroupWillingnessState, consumeGroupWillingness, evaluateGroupWillingness } from './group-willingness'
 import { formatLayeredLog, phaseLabel, renderLogMessage } from './logging'
-import { calendarDayKey, formatLogTime, localClockMinutes } from './time'
-import { consumeGroupWillingness, evaluateGroupWillingness, GroupWillingnessConfig, GroupWillingnessState } from './group-willingness'
-import {
-  CompactionDecision, emptyStorySetting, emptyStoryState, IntentDraft, InterludeArc, InterludeScene,
-  InterludeParticipant, InterludeStory, MemoryDraft, NarrativeDecision, NarrativeFact, NarrativeIntent,
-  GroupContext, GroupMessageContext, NarrativeInteraction, NarrativeProvider, NarrativeRequest, NarrativeCompactor,
-  ContinuitySnapshot, OutgoingMessageDraft, ParticipantState, ScriptEntry, ScriptEntryDraft, StatePatchDraft, StatePatchProposal, StorySetting, StoryState,
-  BrowserIntentDraft, NarrativeImage, OverlaySnapshot, WebObservation, emptyParticipantState,
-  AlterSystemState, AlterSystemConfig, EmotionalOffsetPrompt,
-  AgencyConfig, AgencyWindowState, ProactiveContactDraft, AutomaticDeliverySummary, ScenePresenceDraft, ScenePresenceState,
-  FollowUpCommitmentDraft, FollowUpResolutionDraft,
-} from './types'
-
-export interface Config {
-  /** Immersive operation that suppresses logs and management commands. */
-  blindMode?: BlindModeConfig
-  model: ModelConfig
-  runtime: RuntimeConfig
-  storyDefaults: StoryDefaults
-  logging: LoggingConfig
-  memory?: Partial<MemoryConfig>
-  sharedStory?: SharedStoryConfig
-  /** Optional, read-only browser observations using local macOS Chrome. */
-  browser?: BrowserConfig
-  /** Non-secret profiles; authorization comes only from environment chat ids. */
-  telegram?: TelegramConfig
-  alterSystem?: AlterSystemConfig
-  agency?: AgencyConfig
-}
-
-export interface BlindModeConfig {
-  enabled: boolean
-  /** Periodic, intentionally minimal health signal while all other HDSI logs stay hidden. */
-  healthReportMinutes: number
-}
-
-export interface TelegramAccountRule {
-  chatId: string
-  label: string
-  enabled: boolean
-  /** Optional identity fields for a whitelisted private-message user. */
-  personId?: string
-  profile?: string
-  relationship?: string
-}
-
-export interface TelegramConfig {
-  userAccounts: TelegramAccountRule[]
-  /** Group options never grant access without the environment whitelist. */
-  groupChats?: GroupChatRule[]
-}
-
-export interface GroupChatRule {
-  groupId: string
-  label: string
-  enabled: boolean
-  purpose: string
-  characterRole: string
-  responseMode: 'mention-only' | 'always'
-  contextLimit: number
-  debounceSeconds: number
-  cooldownSeconds: number
-  willingness?: Partial<GroupWillingnessConfig>
-}
-
-export interface MemoryConfig {
-  enabled: boolean
-  backgroundIntervalMinutes: number
-  maxStoriesPerCompactionRun: number
-  sceneEntryThreshold: number
-  sceneCharacterThreshold: number
-  compactionEntryLimit: number
-  compactionCharacterLimit: number
-  sceneHookCharacters: number
-  sceneSummaryCharacters: number
-  arcSummaryCharacters: number
-  recentEntryLimit: number
-  factLimit: number
-  factContentCharacters: number
-  factImportanceWeight: number
-  factConfidenceWeight: number
-  factRecencyWeight: number
-  unresolvedWeight: number
-  statePatchConfidenceThreshold: number
-  majorStatePatchConfidenceThreshold: number
-  statePatchMinEvidence: number
-  /** Minimum independent narrative turns for a minor overlay change. */
-  statePatchMinTurns?: number
-  /** Minimum distinct calendar days represented by minor-patch evidence. */
-  statePatchMinDays?: number
-  /** Cooldown between stable overlay changes on the same target/path. */
-  statePatchCooldownHours?: number
-  autoApplyStatePatches: boolean
-  allowMajorStateChanges: boolean
-  maxFactsPerStory: number
-  /** Keep short-lived dramatic aftereffects as context for later writing. */
-  activeConsequencesEnabled: boolean
-  /** Maximum active consequences carried into one main-narrative prompt. */
-  activeConsequencePromptLimit: number
-  /** Longest permitted lifetime of one consequence; protects canon from drift. */
-  activeConsequenceMaxDays: number
-  /** Used when the narrator omits a precise strength for a valid consequence. */
-  activeConsequenceDefaultStrength: number
-  overlayCompressionEnabled?: boolean
-  overlayRecentDays?: number
-  overlayMonthlyAfterDays?: number
-  overlayWeeklyWindowDays?: number
-  overlayMonthlyWindowDays?: number
-  overlayWeeklySummaryCharacters?: number
-  overlayMonthlySummaryCharacters?: number
-}
-
-export interface RuntimeConfig {
-  captureDirectMessages: boolean
-  autoCreate: boolean
-  ignoreCommandMessages: boolean
-  allowProactiveMessages: boolean
-  /** Minimum narrator-declared willingness for a background-initiated contact. */
-  proactiveWillingnessThreshold?: number
-  sweepIntervalMinutes: number
-  minimumAdvanceMinutes: number
-  maxStoriesPerSweep: number
-  contextEntryLimit: number
-  memoryLimit: number
-  maxScriptCharacters: number
-  maxMessageCharacters: number
-  minimumDelayedReplySeconds: number
-  maximumDelayedReplyMinutes: number
-  cancelDelayedRepliesOnUserMessage: boolean
-  /** Retry a user turn after a transient narrative-provider failure. */
-  narrativeRetryDelaySeconds?: number
-  /** Maximum automatic retries per failed user turn; 0 disables retry. */
-  narrativeRetryMaxAttempts?: number
-  /** Split model reply.content into multiple Telegram messages. */
-  splitReplyMessages?: boolean
-  messageSeparator?: string
-  typingBaseDelaySeconds?: number
-  typingCharactersPerSecond?: number
-  typingMaxDelaySeconds?: number
-  /** Wait after the newest user message before starting a writing request. */
-  userMessageDebounceSeconds?: number
-  /** Automatic life-writing schedule. */
-  autoAdvanceEnabled?: boolean
-  autoAdvanceIntervalMinutes?: number
-  autoAdvanceJitterMinutes?: number
-  /** Short life-writing passes after a conversation, in minutes. */
-  conversationFollowUpMinutes?: number[]
-  /** Small random offset applied to each short conversation follow-up. */
-  conversationFollowUpJitterMinutes?: number
-  restWindows?: RestWindow[]
-}
-
-export interface BrowserConfig {
-  enabled: boolean
-  /** Immediate browsing is opt-in because it intentionally adds one more model/browser round trip. */
-  mode: 'deferred-only' | 'allow-immediate'
-  allowSearch: boolean
-  allowVisit: boolean
-  searchUrlTemplate: string
-  allowedDomains: string[]
-  blockedDomains: string[]
-  maxConcurrentPages: number
-  /** Bound work per background sweep so a backlog cannot hold the story queue for minutes. */
-  maxResearchPerSweep: number
-  navigationTimeout: number
-  waitUntil: 'domcontentloaded' | 'networkidle2'
-  maxTextCharacters: number
-  maxExcerptCharacters: number
-  maxObservationsInPrompt: number
-  cacheMinutes: number
-  allowGroupTriggeredResearch: boolean
-  logObservationPreview: boolean
-}
-
-export interface SharedStoryConfig {
-  /** Enroll an allowed account into an existing main story on its first DM. */
-  autoEnrollParticipants: boolean
-  /** Allow one incoming message to cause an explicitly justified message to another account. */
-  allowCrossConversationMessages: boolean
-  /** Send other participants' relationship/profile details to the model provider. */
-  shareParticipantDetails: boolean
-  /** Hard cap for cross-account messages produced by one narrative turn. */
-  maxCrossConversationActions: number
-  /** Number of other relationship summaries sent to the main narrator. */
-  participantContextLimit: number
-  /** Empty allows all authorized private chats to run management commands. */
-  managerAccounts: string[]
-}
-
-export interface RestWindow {
-  enabled: boolean
-  label: string
-  start: string
-  end: string
-  minIntervalMinutes: number
-  maxIntervalMinutes: number
-}
-
-interface AutoAdvanceConfig {
-  enabled: boolean
-  intervalMinutes: number
-  jitterMinutes: number
-  followUpMinutes: number[]
-  followUpJitterMinutes: number
-  restWindows: RestWindow[]
-}
+import { createFactQuery, factScore, groupOverlayPatches, groupOverlaySnapshots, limitEntriesByCharacters, mergeNote, normalizeMajorEvents, patchClaimsMatch, resolveParticipantId, statePatchEvidence } from './memory-helpers'
+import { createCompactor, createNarrator, hasAnthropicCredentials } from './narrator'
+import { Logger, Runtime, MessageSession as Session, Time } from './runtime'
+import { AutoAdvanceConfig, activeRestWindow, automaticIntervalMinutes, groupDueIntents, normalizeFollowUpMinutes, scheduleConversationFollowUps } from './schedule'
+import { isTransientDatabaseError, mergeParticipantState, mergeSetting, narrativeCursor, normalizeDatabaseRow, normalizeParticipantState, normalizeStoryState, participantRelevance } from './state'
+import { TelegramEnvironment, isAllowedTelegramSession, readTelegramEnvironment, telegramChatId } from './telegram'
+import { formatLogTime } from './time'
+import { AgencyConfig, AgencyWindowState, AlterSystemConfig, AlterSystemState, AutomaticDeliverySummary, CompactionDecision, EmotionalOffsetPrompt, FollowUpCommitmentDraft, FollowUpResolutionDraft, GroupContext, GroupMessageContext, IntentDraft, InterludeArc, InterludeParticipant, InterludeScene, InterludeStory, MemoryDraft, NarrativeCompactor, NarrativeDecision, NarrativeFact, NarrativeImage, NarrativeIntent, NarrativeInteraction, NarrativeProvider, NarrativeRequest, OutgoingMessageDraft, OverlaySnapshot, ParticipantState, ProactiveContactDraft, ScriptEntry, ScriptEntryDraft, StatePatchDraft, StatePatchProposal, StorySetting, StoryState, WebObservation, emptyParticipantState, emptyStorySetting, emptyStoryState } from './types'
+import { clampNumber, clip, isRecord, normalizeFact, sameTimestamp, toDate } from './util'
+import { normalizeBrowserIntentDraft } from './web-policy'
+import { WebObserver } from './web-observer'
 
 interface BufferedUserMessage {
   content: string
@@ -260,51 +57,6 @@ interface DueIntentWake {
   dueAt: number
 }
 
-export interface StoryDefaults {
-  characterName: string
-  characterProfile: string
-  perspective: string
-  userProfile: string
-  relationship: string
-  world: string
-  supportingCast: string
-  location: string
-  style: string
-  timezone: string
-}
-
-export interface LoggingConfig {
-  level: 'silent' | 'error' | 'warn' | 'info' | 'debug'
-  /** Controls how much normal operational activity is written at info level. */
-  verbosity?: 'summary' | 'standard' | 'diagnostic'
-  format: 'compact' | 'detailed' | 'layered'
-  /** Apply semantic ANSI colors in the terminal. */
-  colors?: boolean
-  /** Select an ANSI palette for dark or light terminal themes. */
-  colorTheme?: 'dark' | 'light'
-  /** Show fixed action kaomoji; false uses compact symbols instead. */
-  kaomoji?: boolean
-  logScriptPreview: boolean
-  /** Emit user-visible incoming/outgoing message bodies to the terminal log. */
-  logMessageContent?: boolean
-  previewLength: number
-}
-
-export const DEFAULT_MEMORY_CONFIG: MemoryConfig = {
-  enabled: true, backgroundIntervalMinutes: 10, maxStoriesPerCompactionRun: 20,
-  sceneEntryThreshold: 16, sceneCharacterThreshold: 10_000, compactionEntryLimit: 80,
-  compactionCharacterLimit: 32_000, sceneHookCharacters: 2_000, sceneSummaryCharacters: 8_000,
-  arcSummaryCharacters: 12_000, recentEntryLimit: 30, factLimit: 20, factContentCharacters: 4_000,
-  factImportanceWeight: 0.5, factConfidenceWeight: 0.35, factRecencyWeight: 0.15, unresolvedWeight: 0.2,
-  statePatchConfidenceThreshold: 0.82, majorStatePatchConfidenceThreshold: 0.95,
-  statePatchMinEvidence: 3, statePatchMinTurns: 3, statePatchMinDays: 2, statePatchCooldownHours: 72,
-  autoApplyStatePatches: true, allowMajorStateChanges: true, maxFactsPerStory: 200,
-  activeConsequencesEnabled: true, activeConsequencePromptLimit: 6, activeConsequenceMaxDays: 7,
-  activeConsequenceDefaultStrength: 0.55, overlayCompressionEnabled: true, overlayRecentDays: 2,
-  overlayMonthlyAfterDays: 10, overlayWeeklyWindowDays: 5, overlayMonthlyWindowDays: 10,
-  overlayWeeklySummaryCharacters: 1_600, overlayMonthlySummaryCharacters: 2_400,
-}
-
 export interface StoryStartReadiness {
   ready: boolean
   existing?: InterludeStory
@@ -345,10 +97,7 @@ export class InterludeService {
   private scheduledAlterAnalyses = new Set<string>()
   /** SQLite has one writable connection; serialize writes globally. */
   private databaseWriteQueue: Promise<unknown> = Promise.resolve()
-  /** The browser is bounded separately from narrative work so a burst of
-   * deferred intents cannot spawn an uncontrolled number of Chromium pages. */
-  private browserActive = 0
-  private browserWaiters: Array<() => void> = []
+  private readonly web: WebObserver
   /** Local terminal logger. */
   private readonly serviceLogger: Logger
   private backgroundStarted = false
@@ -357,8 +106,26 @@ export class InterludeService {
   private compactionSweepRunning = false
   private blindModeHealthIssue = false
 
-  constructor(public ctx: Runtime, public config: Config) {
+  constructor(public ctx: Runtime, public config: Config,
+    private readonly telegramEnvironment: TelegramEnvironment = readTelegramEnvironment()) {
     this.serviceLogger = ctx.logger('hds-interlude')
+    this.web = new WebObserver({
+      browserConfig: () => this.config.browser,
+      shareParticipantDetails: () => this.sharedStoryConfig.shareParticipantDetails,
+      browser: () => this.ctx.puppeteer,
+      canUseParticipant: async id => {
+        const participant = await this.getParticipant(id)
+        return !!participant && this.canHandleParticipant(participant)
+      },
+      dbGet: (table, query, options) => this.dbGet(table, query, options),
+      dbCreate: (table, data) => this.dbCreate(table, data),
+      dbSet: (table, query, data) => this.dbSet(table, query, data),
+      appendEntry: (storyId, entry, now, participantId) => this.appendEntry(storyId, entry, now, participantId),
+      appendIntent: (storyId, intent, now, participantId) => this.appendIntent(storyId, intent, now, participantId),
+      report: (level, story, phase, message, ...args) => this.report(level, story, phase, message, ...args),
+      reportOperation: (verbosity, level, story, phase, message, ...args) => this.reportOperation(verbosity, level, story, phase, message, ...args),
+      reportStandaloneOperation: (verbosity, level, message, ...args) => this.reportStandaloneOperation(verbosity, level, message, ...args),
+    })
     const silentModelLogs = this.blindModeConfig.enabled || !['info', 'debug'].includes(config.logging.level)
     this.narrator = createNarrator(ctx, config.model, silentModelLogs)
     this.compactor = createCompactor(ctx, config.model, silentModelLogs)
@@ -389,8 +156,6 @@ export class InterludeService {
     this.invalidateBufferedNarratives()
     await Promise.allSettled([...this.queues.values(), this.databaseWriteQueue])
   }
-
-  private readonly telegramEnvironment = readTelegramEnvironment()
 
   canHandleSession(session: Session): boolean {
     return session.isDirect && isAllowedTelegramSession(this.telegramEnvironment, session)
@@ -1251,9 +1016,9 @@ export class InterludeService {
   }
 
   private async renderAnimatedImageFrame(dataUri: string) {
-    const puppeteer = (this.ctx as any).puppeteer
+    const puppeteer = this.ctx.puppeteer
     if (!puppeteer?.page) return undefined
-    return this.withBrowserSlot(async () => {
+    return this.web.withBrowserSlot(async () => {
       let page: any
       try {
         page = await puppeteer.page()
@@ -1378,7 +1143,7 @@ export class InterludeService {
         // Persist a successful/failed immediate observation only after this
         // request has survived debounce invalidation. This keeps an obsolete
         // result from contaminating the next combined user turn.
-        for (const observation of immediateObservations) await this.persistCollectedWebObservation(observation)
+        for (const observation of immediateObservations) await this.web.persist(observation)
         const commitsFirstReply = succeeded
           && decision.interaction?.reply?.mode === 'immediate'
           && typeof decision.interaction.reply.content === 'string'
@@ -1552,8 +1317,8 @@ export class InterludeService {
     // the next sweep and never block a live user turn for an unbounded time.
     const browserIntents = due
       .filter(intent => intent.type === 'browser-research')
-      .slice(0, Math.max(1, this.browserConfig.maxResearchPerSweep))
-    for (const intent of browserIntents) await this.executeDeferredBrowserIntent(story, intent, now)
+      .slice(0, Math.max(1, this.web.config.maxResearchPerSweep))
+    for (const intent of browserIntents) await this.web.executeDeferredIntent(story, intent, now)
     // Browser intents always complete (successfully or as a recorded failure)
     // in executeDeferredBrowserIntent(), so re-reading the whole pending list
     // here only adds a SQLite round trip to every background sweep.
@@ -1681,7 +1446,7 @@ export class InterludeService {
       this.activeArc(story.id),
       this.facts(story.id, this.config.runtime.memoryLimit, factQuery, participant?.id),
       this.participants(story.id),
-      this.webObservations(story.id, participant?.id),
+      this.web.observations(story.id, participant?.id),
       this.activeConsequences(
         story.id,
         now,
@@ -1730,7 +1495,7 @@ export class InterludeService {
     const mergedWebContext = [...webContext, ...extraWebContext]
       .filter(observation => observation.status !== 'deleted')
       .sort((left, right) => left.accessedAt.getTime() - right.accessedAt.getTime())
-      .slice(-Math.max(1, this.browserConfig.maxObservationsInPrompt))
+      .slice(-Math.max(1, this.web.config.maxObservationsInPrompt))
     const refreshContinuity = this.shouldRefreshContinuity(story, phase)
     return this.narrator.decide({
       phase, refreshContinuity, outputRecovery, story, from, now, userMessage, images,
@@ -1771,8 +1536,8 @@ export class InterludeService {
       this.mainModelLabel(), participant?.id || '全局', formatLogTime(from, story.setting.timezone), formatLogTime(now, story.setting.timezone), dueIntents.length)
     try {
       let decision = await this.decide(story, participant, phase, from, effectiveNow, userMessage, dueIntents, supersededIntents, groupContext, images)
-      const immediate = phase === 'user-message' && participant && !groupContext && this.browserConfig.enabled && this.browserConfig.mode === 'allow-immediate'
-        ? decision.browserIntents?.map(intent => normalizeBrowserIntentDraft(intent, this.browserConfig)).find(intent => intent?.timing === 'immediate')
+      const immediate = phase === 'user-message' && participant && !groupContext && this.web.config.enabled && this.web.config.mode === 'allow-immediate'
+        ? decision.browserIntents?.map(intent => normalizeBrowserIntentDraft(intent, this.web.config)).find(intent => intent?.timing === 'immediate')
         : undefined
       if (immediate) {
         // The first pass merely proposes the action. Do not persist its prose
@@ -1780,7 +1545,7 @@ export class InterludeService {
         // more with the observation so the final script stays a single,
         // coherent piece of writing rather than two stitched tool calls.
         this.reportOperation('standard', 'info', story, phase, '即时网页观察开始 模式=%s', immediate.mode)
-        const observation = await this.collectWebObservation(story, immediate, participant?.id ?? '', null, new Date(), false)
+        const observation = await this.web.collect(story, immediate, participant?.id ?? '', null, new Date(), false)
         immediateObservations = [observation]
         effectiveNow = new Date()
         decision = await this.decide(story, participant, phase, from, effectiveNow, userMessage, dueIntents, supersededIntents, groupContext, images, immediateObservations)
@@ -1879,8 +1644,8 @@ export class InterludeService {
       // An immediate intent is handled before the final narrator pass when
       // enabled. If it reaches this point (disabled mode, group turn, or a
       // second consecutive request), safely downgrade it to deferred work.
-      if (participant || phase !== 'user-message' || this.browserConfig.allowGroupTriggeredResearch) {
-        await this.appendBrowserIntent(story.id, browserIntent, now, participant?.id ?? '')
+      if (participant || phase !== 'user-message' || this.web.config.allowGroupTriggeredResearch) {
+        await this.web.planIntent(story.id, browserIntent, now, participant?.id ?? '')
       }
     }
     if (participant && decision.statePatch) await this.updateParticipantState(participant, decision.statePatch, now)
@@ -2212,28 +1977,6 @@ export class InterludeService {
       .map(item => item.fact)
   }
 
-  /** Returns only observations that are safe for this narration branch. A
-   * participant's browsing is not shown to another private participant unless
-   * the owner has explicitly enabled shared relationship details. */
-  private async webObservations(storyId: string, participantId?: string) {
-    // Browsing is optional. Avoid a database read on every live turn when the
-    // feature is disabled, which is the default for most installations.
-    if (!this.browserConfig.enabled) return []
-    const limit = Math.max(1, Math.min(this.browserConfig.maxObservationsInPrompt, 20))
-    const rows = await this.dbGet('interlude_web_observation', { storyId }, {
-      limit: Math.max(limit * 4, 20), sort: { accessedAt: 'desc' },
-    })
-    return rows
-      // Failed/blocked attempts already have a terse script event. Keeping
-      // their error text in every later prompt wastes tokens and can crowd
-      // out useful successful observations.
-      .filter(observation => observation.status === 'success')
-      .filter(observation => this.sharedStoryConfig.shareParticipantDetails
-        || !observation.participantId || observation.participantId === (participantId ?? ''))
-      .slice(0, limit)
-      .reverse()
-  }
-
   async activeScene(storyId: string): Promise<InterludeScene | null> {
     const rows = await this.dbGet('interlude_scene', { storyId, status: 'active' }, {
       limit: 1,
@@ -2325,170 +2068,6 @@ export class InterludeService {
         ...(update.resolution ? { resolution: update.resolution } : {}),
       }
       await this.dbSet('interlude_intent', { id: intent.id }, { status: update.status, payload, updatedAt: now })
-    }
-  }
-
-  /** Stores a narrator-proposed browser action as a future intent. The model
-   * never writes page content directly; a separate Puppeteer task creates the
-   * observation later. */
-  private async appendBrowserIntent(storyId: string, draft: BrowserIntentDraft, now: Date, fallbackParticipantId = '') {
-    const config = this.browserConfig
-    if (!config.enabled) return
-    const normalized = normalizeBrowserIntentDraft(draft, config)
-    if (!normalized) return
-    // A model may describe a reason involving another person, but it may not
-    // silently attach a web observation to another relationship branch. The
-    // active participant owns a live-turn browse; unattended life browsing is
-    // world-level. This is both a privacy boundary and a simpler mental model.
-    const participantId = fallbackParticipantId
-    const allowedParticipant = participantId ? await this.getParticipant(participantId) : undefined
-    if (participantId && (!allowedParticipant || !this.canHandleParticipant(allowedParticipant))) return
-    const notBefore = new Date(now.getTime() + Time.second)
-    await this.appendIntent(storyId, {
-      type: 'browser-research',
-      summary: clip(normalized.purpose, 500) || 'The character planned to read a public web page.',
-      notBefore: notBefore.toISOString(),
-      payload: {
-        mode: normalized.mode,
-        query: normalized.query ?? '',
-        url: normalized.url ?? '',
-        purpose: normalized.purpose,
-      },
-    }, now, participantId)
-    this.reportStandaloneOperation('diagnostic', 'debug', '已创建网页浏览意图：故事=%s 模式=%s', storyId, normalized.mode)
-  }
-
-  /** Executes a due browser intent once, records its bounded observation, and
-   * marks the future plan complete regardless of success. A failed browser is
-   * still an event (the character could not access the page), but it never
-   * blocks later dialogue or background life updates. */
-  private async executeDeferredBrowserIntent(story: InterludeStory, intent: NarrativeIntent, now: Date) {
-    const payload = browserIntentFromPayload(intent.payload)
-    const observation = await this.collectWebObservation(story, payload, intent.participantId, intent.id, now)
-    await this.dbSet('interlude_intent', { id: intent.id }, { status: 'completed', updatedAt: new Date() })
-    return observation
-  }
-
-  /** Read a page through local Chrome. This is intentionally read-only:
-   * it rejects non-public destinations, extracts visible text only, and closes
-   * the page after every observation. */
-  private async collectWebObservation(story: InterludeStory, draft: BrowserIntentDraft | null, participantId: string, intentId: number | null, now: Date, persist = true): Promise<WebObservation> {
-    const config = this.browserConfig
-    const normalized = draft ? normalizeBrowserIntentDraft(draft, config) : undefined
-    if (!normalized || !config.enabled) {
-      return this.saveWebObservation(story.id, participantId, intentId, normalized?.mode ?? 'visit', normalized?.query ?? '', normalized?.url ?? '', '', '', '浏览未执行：功能未启用或请求不符合安全规则。', 'blocked', now, persist)
-    }
-
-    const target = resolveBrowserTarget(normalized, config)
-    if (!target) {
-      this.report('warn', story, 'intent-due', '网页浏览被安全策略拦截：模式=%s', normalized.mode)
-      return this.saveWebObservation(story.id, participantId, intentId, normalized.mode, normalized.query ?? '', normalized.url ?? '', '', '', '浏览目标未通过公开网页安全校验。', 'blocked', now, persist)
-    }
-
-    const cached = await this.findCachedWebObservation(story.id, participantId, normalized, now)
-    if (cached) {
-      if (!persist) return { ...cached, id: 0, intentId, accessedAt: now, createdAt: now }
-      await this.appendEntry(story.id, {
-        kind: 'web-observation', actor: 'system',
-        content: `The character revisited a recent web observation: ${cached.title || cached.url}.`,
-        occurredAt: now.toISOString(), metadata: { observationId: cached.id, cached: true, status: cached.status },
-      }, now, participantId)
-      return cached
-    }
-
-    const puppeteer = (this.ctx as any).puppeteer
-    if (!puppeteer?.page) {
-      this.report('warn', story, 'intent-due', '网页浏览服务不可用：请检查 browser.enabled 和 macOS Chrome。')
-      return this.saveWebObservation(story.id, participantId, intentId, normalized.mode, normalized.query ?? '', target, '', '', '浏览器服务不可用。', 'failed', now, persist)
-    }
-
-    return this.withBrowserSlot(async () => {
-      let page: any
-      try {
-        page = await puppeteer.page()
-        await page.setUserAgent(`Mozilla/5.0 (compatible; Alice-HDSI/${HDS_INTERLUDE_VERSION})`)
-        await page.setRequestInterception(true)
-        page.on('request', (request: any) => {
-          const resourceType = request.resourceType?.() ?? 'document'
-          const requestUrl = request.url?.() ?? ''
-          const allowedResource = ['document', 'stylesheet', 'script', 'xhr', 'fetch', 'image'].includes(resourceType)
-          const allowedUrl = isSafePublicWebUrl(requestUrl, config)
-          const operation = allowedResource && allowedUrl ? request.continue() : request.abort('blocked')
-          void Promise.resolve(operation).catch(() => undefined)
-        })
-        page.on('popup', (popup: any) => void popup.close().catch(() => undefined))
-        await page.goto(target, { waitUntil: config.waitUntil, timeout: config.navigationTimeout })
-        const finalUrl = String(page.url?.() ?? target)
-        if (!isSafePublicWebUrl(finalUrl, config)) throw new Error('页面重定向到了不允许的地址。')
-        const result = await page.evaluate(() => ({
-          title: String(document.title || '').trim(),
-          text: String(document.body?.innerText || '').replace(/\r/g, '').replace(/\n{3,}/g, '\n\n').trim(),
-        }))
-        const text = clip(String(result?.text ?? ''), config.maxTextCharacters)
-        const title = clip(String(result?.title ?? ''), 500)
-        const excerpt = clip(text, config.maxExcerptCharacters)
-        const summary = clip(`${title ? `${title}。` : ''}${excerpt}`, config.maxExcerptCharacters)
-        const observation = await this.saveWebObservation(story.id, participantId, intentId, normalized.mode, normalized.query ?? '', finalUrl, title, excerpt, summary || '页面没有可提取的正文。', 'success', new Date(), persist)
-        this.reportOperation('standard', 'info', story, 'intent-due', '网页读取完成 标题=%s 正文=%d字', title || '未命名页面', text.length)
-        if (config.logObservationPreview) this.report('debug', story, 'intent-due', '网页观察节选：%s', excerpt)
-        return observation
-      } catch (error) {
-        this.report('warn', story, 'intent-due', '网页读取失败：%s', error)
-        return this.saveWebObservation(story.id, participantId, intentId, normalized.mode, normalized.query ?? '', target, '', '', `网页读取失败：${clip(String(error instanceof Error ? error.message : error), 500)}`, 'failed', new Date(), persist)
-      } finally {
-        if (page) await page.close().catch(() => undefined)
-      }
-    })
-  }
-
-  private async saveWebObservation(storyId: string, participantId: string, intentId: number | null, mode: 'search' | 'visit', query: string, url: string, title: string, excerpt: string, summary: string, status: WebObservation['status'], now: Date, persist = true): Promise<WebObservation> {
-    const candidate: WebObservation = {
-      id: 0, storyId, participantId, intentId, mode, query: clip(query, 500), url: clip(url, 2_000), title: clip(title, 500),
-      excerpt: clip(excerpt, this.browserConfig.maxExcerptCharacters), summary: clip(summary, this.browserConfig.maxExcerptCharacters),
-      status, accessedAt: now, createdAt: now,
-    }
-    if (!persist) return candidate
-    const observation = await this.dbCreate('interlude_web_observation', candidate) as WebObservation
-    await this.appendEntry(storyId, {
-      kind: 'web-observation', actor: 'system',
-      content: webObservationEntryContent(observation), occurredAt: now.toISOString(),
-      metadata: { observationId: observation.id, status, mode, url: observation.url },
-    }, now, participantId)
-    return observation
-  }
-
-  /** Immediate browser reads are intentionally held in memory until the
-   * final narrator result survives the stale-request check. This prevents an
-   * obsolete two-second message burst from leaving a durable web event behind. */
-  private async persistCollectedWebObservation(observation: WebObservation) {
-    return this.saveWebObservation(
-      observation.storyId, observation.participantId, observation.intentId, observation.mode,
-      observation.query, observation.url, observation.title, observation.excerpt, observation.summary,
-      observation.status, observation.accessedAt,
-    )
-  }
-
-  private async findCachedWebObservation(storyId: string, participantId: string, draft: BrowserIntentDraft, now: Date) {
-    const minutes = this.browserConfig.cacheMinutes
-    if (minutes <= 0) return undefined
-    const cutoff = new Date(now.getTime() - minutes * Time.minute)
-    const rows = await this.dbGet('interlude_web_observation', { storyId, participantId, status: 'success' }, {
-      limit: 20, sort: { accessedAt: 'desc' },
-    })
-    return rows.find(observation => observation.accessedAt >= cutoff
-      && observation.mode === draft.mode
-      && (draft.mode === 'search' ? observation.query === (draft.query ?? '') : observation.url === (draft.url ?? '')))
-  }
-
-  private async withBrowserSlot<T>(task: () => Promise<T>) {
-    const max = Math.max(1, this.browserConfig.maxConcurrentPages)
-    if (this.browserActive >= max) await new Promise<void>(resolve => this.browserWaiters.push(resolve))
-    this.browserActive++
-    try {
-      return await task()
-    } finally {
-      this.browserActive--
-      this.browserWaiters.shift()?.()
     }
   }
 
@@ -3178,42 +2757,6 @@ export class InterludeService {
     }
   }
 
-  private get browserConfig(): BrowserConfig {
-    const merged: BrowserConfig = {
-      enabled: false,
-      mode: 'deferred-only',
-      allowSearch: true,
-      allowVisit: true,
-      searchUrlTemplate: 'https://html.duckduckgo.com/html/?q={query}',
-      allowedDomains: [],
-      blockedDomains: [],
-      maxConcurrentPages: 1,
-      maxResearchPerSweep: 1,
-      navigationTimeout: 15_000,
-      waitUntil: 'domcontentloaded',
-      maxTextCharacters: 12_000,
-      maxExcerptCharacters: 3_000,
-      maxObservationsInPrompt: 4,
-      cacheMinutes: 30,
-      allowGroupTriggeredResearch: false,
-      logObservationPreview: false,
-      ...(this.config.browser ?? {}),
-    }
-    // Programmatic callers may omit numeric fields. Normalise
-    // here so one malformed browser option cannot silently disable all due
-    // research or break the page semaphore.
-    return {
-      ...merged,
-      maxConcurrentPages: Math.max(1, Math.min(4, Number(merged.maxConcurrentPages) || 1)),
-      maxResearchPerSweep: Math.max(1, Math.min(20, Number(merged.maxResearchPerSweep) || 1)),
-      navigationTimeout: Math.max(1_000, Number(merged.navigationTimeout) || 15_000),
-      maxTextCharacters: Math.max(500, Number(merged.maxTextCharacters) || 12_000),
-      maxExcerptCharacters: Math.max(200, Number(merged.maxExcerptCharacters) || 3_000),
-      maxObservationsInPrompt: Math.max(1, Math.min(20, Number(merged.maxObservationsInPrompt) || 4)),
-      cacheMinutes: Math.max(0, Number(merged.cacheMinutes) || 0),
-    }
-  }
-
   private async ensureContinuity(story: InterludeStory, now: Date) {
     // 每个故事始终应有一个活动场景和一个活动弧线。旧数据升级或手动关闭场景后，
     // 此方法负责补齐它们，并把 id 缓存在 story.state 供管理命令查看。
@@ -3868,50 +3411,6 @@ function mentionsBot(session: Session) {
   return session.mentionedBot === true
 }
 
-export function normalizeGroupVisibleReply(raw: NarrativeDecision['groupReply'], interaction: NarrativeDecision['interaction'], maxCharacters: number) {
-  return normalizeGroupReply(raw, maxCharacters) || normalizeGroupInteractionReply(interaction, maxCharacters)
-}
-
-function requiresVisibleReplyRecovery(phase: NarrativeRequest['phase'], groupContext: GroupContext | undefined, decision: NarrativeDecision) {
-  if (phase !== 'user-message') return false
-  return groupContext ? !hasStructuredGroupReply(decision) : !hasStructuredInteraction(decision.interaction)
-}
-
-function visibleReplyMode(decision: NarrativeDecision, groupContext?: GroupContext) {
-  if (!groupContext) return hasStructuredInteraction(decision.interaction) ? decision.interaction!.reply.mode : '未提供或无效'
-  if (hasStructuredGroupReplyField(decision.groupReply)) return `group:${decision.groupReply!.mode}`
-  if (hasStructuredInteraction(decision.interaction)) return `group-fallback:${decision.interaction!.reply.mode}`
-  return '未提供或无效'
-}
-
-function hasStructuredGroupReply(decision: NarrativeDecision) {
-  return hasStructuredGroupReplyField(decision.groupReply) || hasStructuredInteraction(decision.interaction)
-}
-
-function hasStructuredGroupReplyField(value: unknown) {
-  if (!isRecord(value) || (value.mode !== 'none' && value.mode !== 'immediate')) return false
-  return value.mode === 'none' || typeof value.content === 'string' && !!value.content.trim()
-}
-
-function hasStructuredInteraction(value: unknown) {
-  if (!isRecord(value) || typeof value.seen !== 'boolean' || !isRecord(value.reply)) return false
-  const mode = value.reply.mode
-  if (mode !== 'none' && mode !== 'immediate' && mode !== 'delayed') return false
-  if (mode === 'none') return true
-  if (typeof value.reply.content !== 'string' || !value.reply.content.trim()) return false
-  return mode === 'immediate' || typeof value.reply.sendAt === 'string' && !!value.reply.sendAt.trim()
-}
-
-function normalizeGroupReply(raw: NarrativeDecision['groupReply'], maxCharacters: number) {
-  if (!raw || raw.mode !== 'immediate') return ''
-  return clip(raw.content, Math.max(1, maxCharacters))
-}
-
-function normalizeGroupInteractionReply(raw: NarrativeDecision['interaction'], maxCharacters: number) {
-  if (!raw || raw.reply.mode !== 'immediate') return ''
-  return clip(raw.reply.content, Math.max(1, maxCharacters))
-}
-
 function normalizeAccountId(value: unknown) {
   return String(value ?? '').trim()
 }
@@ -3924,521 +3423,6 @@ function quotesBot(session: Session) {
   return String((session as any).quote?.user?.id ?? '') === String(session.selfId ?? '')
 }
 
-function isTransientDatabaseError(error: unknown) {
-  const message = error instanceof Error ? error.message : String(error)
-  return /disk\s*i\/o|database is locked|busy|unable to open/i.test(message)
-}
-
-export function hasRequiredNarrativeScript(value: NarrativeDecision | undefined | null) {
-  return typeof value?.script === 'string' && value.script.trim().length > 0
-}
-
-export function resolveBlindModeConfig(value?: Partial<BlindModeConfig>): BlindModeConfig {
-  return {
-    enabled: value?.enabled === true,
-    healthReportMinutes: Math.max(1, Math.min(1_440, Math.floor(value?.healthReportMinutes ?? 10))),
-  }
-}
-
-function isAutomaticNarrativePhase(phase: NarrativeRequest['phase']) {
-  return phase === 'advance' || phase === 'conversation-follow-up'
-}
-
-function normalizeAutomaticDeliverySummary(value: unknown) {
-  return typeof value === 'string' ? clip(value, 240).trim() : ''
-}
-
-function normalizeFollowUpSummary(value: unknown) {
-  return typeof value === 'string' ? clip(value, 360).trim().replace(/\s+/g, ' ').toLowerCase() : ''
-}
-
-function followUpExpiresAt(value: unknown, now: Date) {
-  const requested = toDate(value)
-  const maximum = new Date(now.getTime() + 24 * Time.hour)
-  if (!requested || requested <= now) return maximum
-  return requested < maximum ? requested : maximum
-}
-
-function normalizeFollowUpCommitment(value: unknown, now: Date): FollowUpCommitmentDraft | undefined {
-  if (!isRecord(value)) return undefined
-  const kind = value.kind === 'thinking' || value.kind === 'checking' || value.kind === 'decision' || value.kind === 'emotional-settle'
-    ? value.kind
-    : undefined
-  const summary = typeof value.summary === 'string' ? clip(value.summary, 360).trim() : ''
-  const notBefore = toDate(value.notBefore)
-  if (!kind || !summary || !notBefore || notBefore.getTime() - now.getTime() < 5 * Time.minute || notBefore.getTime() - now.getTime() > 12 * Time.hour) return undefined
-  const sourceEntryIds = Array.isArray(value.sourceEntryIds)
-    ? value.sourceEntryIds.filter(id => typeof id === 'number' && Number.isSafeInteger(id) && id > 0).slice(0, 4)
-    : []
-  const expiresAt = toDate(value.expiresAt)
-  return {
-    kind, summary, notBefore: notBefore.toISOString(),
-    ...(expiresAt && expiresAt > notBefore ? { expiresAt: expiresAt.toISOString() } : {}),
-    ...(sourceEntryIds.length ? { sourceEntryIds } : {}),
-  }
-}
-
-function inferredFollowUpCommitment(content: string, now: Date): FollowUpCommitmentDraft {
-  return {
-    kind: 'thinking', summary: clip(`The character promised to return after thinking: ${content}`, 360),
-    notBefore: new Date(now.getTime() + 20 * Time.minute).toISOString(),
-  }
-}
-
-function interactionPromisesFollowUp(content: unknown) {
-  if (typeof content !== 'string') return false
-  return /我(?:先)?想想|我去(?:想想|看看|查查|确认)|晚点(?:回|说|告诉)|之后(?:回|说|告诉)|等我.{0,12}(?:回|说|告诉)|整理.{0,12}(?:回|说|告诉)/.test(content)
-}
-
-function normalizeFollowUpResolutions(value: unknown): FollowUpResolutionDraft[] {
-  if (!Array.isArray(value)) return []
-  return value
-    .filter((item): item is Record<string, unknown> => isRecord(item)
-      && typeof item.id === 'number' && Number.isInteger(item.id) && item.id > 0
-      && (item.outcome === 'fulfilled' || item.outcome === 'rescheduled' || item.outcome === 'cancelled'))
-    .map(item => ({
-      id: item.id as number,
-      outcome: item.outcome as FollowUpResolutionDraft['outcome'],
-      ...(typeof item.notBefore === 'string' ? { notBefore: item.notBefore } : {}),
-    }))
-    .slice(0, 2)
-}
-
-function automaticDeliveryFromPayload(value: unknown): OutgoingMessageDraft['automaticDelivery'] | undefined {
-  const record = isRecord(value) && isRecord(value.automaticDelivery) ? value.automaticDelivery : undefined
-  const summary = normalizeAutomaticDeliverySummary(record?.summary)
-  const sourceEntryId = typeof record?.sourceEntryId === 'number' && Number.isSafeInteger(record.sourceEntryId)
-    ? record.sourceEntryId
-    : undefined
-  return summary ? { summary, ...(sourceEntryId ? { sourceEntryId } : {}) } : undefined
-}
-
-function mergeDeliverySummary(left: string, right: string) {
-  if (!left || left === right || left.includes(right)) return left || right
-  if (right.includes(left)) return right
-  return clip(`${left}；${right}`, 240)
-}
-
-function normalizeAutomaticDeliverySummaries(value: unknown): AutomaticDeliverySummary[] {
-  if (!Array.isArray(value)) return []
-  const seen = new Set<string>()
-  const normalized: AutomaticDeliverySummary[] = []
-  for (const item of value) {
-    if (!isRecord(item)) continue
-    const participantId = typeof item.participantId === 'string' ? clip(item.participantId, 255) : ''
-    const summary = normalizeAutomaticDeliverySummary(item.summary)
-    const deliveredAt = typeof item.deliveredAt === 'string' && !Number.isNaN(new Date(item.deliveredAt).getTime())
-      ? item.deliveredAt
-      : ''
-    const sourceEntryId = typeof item.sourceEntryId === 'number' && Number.isSafeInteger(item.sourceEntryId)
-      ? item.sourceEntryId
-      : undefined
-    const key = `${participantId}|${sourceEntryId ?? 0}|${summary}`
-    if (!participantId || !summary || !deliveredAt || seen.has(key)) continue
-    seen.add(key)
-    normalized.push({ participantId, summary, ...(sourceEntryId ? { sourceEntryId } : {}), deliveredAt })
-  }
-  return normalized.slice(-6)
-}
-
-function normalizeScenePresenceState(value: unknown): ScenePresenceState[] {
-  if (!Array.isArray(value)) return []
-  const latest = new Map<string, ScenePresenceState>()
-  for (const item of value) {
-    if (!isRecord(item)) continue
-    const name = typeof item.name === 'string' ? clip(item.name, 80).trim() : ''
-    const status = item.status === 'present' || item.status === 'off-scene' || item.status === 'expected'
-      ? item.status
-      : undefined
-    const basis = typeof item.basis === 'string' ? clip(item.basis, 300).trim() : ''
-    const sourceEntryIds = Array.isArray(item.sourceEntryIds)
-      ? item.sourceEntryIds.filter(id => typeof id === 'number' && Number.isSafeInteger(id)).slice(0, 8)
-      : []
-    const updatedAt = typeof item.updatedAt === 'string' && !Number.isNaN(new Date(item.updatedAt).getTime())
-      ? item.updatedAt
-      : ''
-    if (!name || !status || !basis || !sourceEntryIds.length || !updatedAt) continue
-    latest.set(name, { name, status, basis, sourceEntryIds, updatedAt })
-  }
-  return [...latest.values()].slice(-8)
-}
-
-/** Scene compaction may update a tiny roster only with explicit observed
- * evidence. This keeps named supporting cast available without treating them
- * as automatically present. */
-export function normalizeScenePresenceDrafts(value: unknown, entries: ScriptEntry[], now = new Date()): ScenePresenceState[] {
-  if (!Array.isArray(value)) return []
-  const byId = new Map(entries.map(entry => [entry.id, entry]))
-  const next: ScenePresenceState[] = []
-  for (const item of value as ScenePresenceDraft[]) {
-    if (!isRecord(item)) continue
-    const name = typeof item.name === 'string' ? clip(item.name, 80).trim() : ''
-    const status = item.status === 'present' || item.status === 'off-scene' || item.status === 'expected'
-      ? item.status
-      : undefined
-    const basis = typeof item.basis === 'string' ? clip(item.basis, 300).trim() : ''
-    const sourceEntryIds = Array.isArray(item.sourceEntryIds)
-      ? item.sourceEntryIds.filter(id => typeof id === 'number' && byId.has(id)).slice(0, 8)
-      : []
-    const evidence = sourceEntryIds.map(id => byId.get(id)!).filter(entry => entry.content.includes(name))
-    if (!name || !status || !basis || !evidence.length || !hasExplicitPresenceEvidence(status, evidence)) continue
-    next.push({ name, status, basis, sourceEntryIds, updatedAt: now.toISOString() })
-  }
-  return normalizeScenePresenceState(next)
-}
-
-function hasExplicitPresenceEvidence(status: ScenePresenceState['status'], entries: ScriptEntry[]) {
-  const text = entries.map(entry => entry.content).join('\n')
-  if (status === 'off-scene') return /告别|道别|分别|先走|离开|离去|回家|回去了|独自|分开|告辞/.test(text)
-  if (status === 'expected') return /约好|约在|等会|稍后|会来|准备来|约见/.test(text)
-  return /一起|同行|身边|来到|抵达|进入|走进|拉着|坐在|站在|陪着/.test(text)
-}
-
-function normalizeDecision(raw: NarrativeDecision, from: Date, now: Date, permitMessages: boolean, runtime: RuntimeConfig, shared: SharedStoryConfig, currentParticipantId: string, permittedParticipantIds: Set<string>, phase: NarrativeRequest['phase'] = 'advance', memory?: MemoryConfig, refreshContinuity = false) {
-  const script = typeof raw?.script === 'string'
-    ? raw.script.trim().slice(0, runtime.maxScriptCharacters)
-    : ''
-  // The only channel for a private reply is interaction. Automatic life
-  // passes have no live participant event, so they cannot emit it at all.
-  const interaction = phase === 'advance' ? undefined : normalizeInteraction(raw?.interaction, now, runtime)
-  // Optional memories are model suggestions, not a source of truth.  Never
-  // let a model turn an invented online contact into durable retrieval data.
-  const memories = Array.isArray(raw?.memories)
-    ? raw.memories.filter(validMemory).map(memory => ({ ...memory, participantId: permittedOrGlobal(memory.participantId, currentParticipantId, permittedParticipantIds) }))
-    : []
-  const intents = Array.isArray(raw?.intents) ? raw.intents
-    .filter(intent => !isRecord(intent) || intent.type !== 'follow-up-commitment')
-    .filter(intent => validIntent(intent, from, now, memory))
-    .map(intent => ({ ...intent, participantId: permittedOrGlobal(intent.participantId, currentParticipantId, permittedParticipantIds) }))
-    .slice(0, 8)
-    : []
-  const intentUpdates = normalizeIntentUpdates(raw?.intentUpdates)
-  const browserIntents = Array.isArray(raw?.browserIntents)
-    ? raw.browserIntents.map(normalizeBrowserIntentDraftLoose).filter((intent): intent is BrowserIntentDraft => !!intent).slice(0, 1)
-    : []
-  const proactive = phase === 'advance'
-  const agencyGatedProactive = proactive && !isRecord(raw?.proactiveContact)
-  const crossConversationActions = permitMessages && shared.allowCrossConversationMessages && Array.isArray(raw?.crossConversationActions)
-    ? raw.crossConversationActions
-      .map(action => normalizeConversationAction(action, runtime, permittedParticipantIds, currentParticipantId, now, agencyGatedProactive))
-      .filter((action): action is NonNullable<ReturnType<typeof normalizeConversationAction>> => !!action)
-      .slice(0, Math.max(0, shared.maxCrossConversationActions))
-    : []
-  const statePatch = isRecord(raw?.statePatch) ? pickParticipantStatePatch(raw.statePatch) : undefined
-  const continuity = refreshContinuity ? normalizeContinuitySnapshot(raw?.continuity) : undefined
-  const alter = normalizeAlterValue(raw?.alter)
-  const automaticDeliverySummary = isAutomaticNarrativePhase(phase)
-    ? normalizeAutomaticDeliverySummary(raw?.automaticDeliverySummary) || undefined
-    : undefined
-  const followUpCommitment = phase === 'user-message' ? normalizeFollowUpCommitment(raw?.followUpCommitment, now) : undefined
-  const followUpResolutions = phase === 'user-message' || phase === 'intent-due'
-    ? normalizeFollowUpResolutions(raw?.followUpResolutions)
-    : []
-  const agencyWindow = isRecord(raw?.agencyWindow) ? raw.agencyWindow : undefined
-  const proactiveContact = isRecord(raw?.proactiveContact) ? raw.proactiveContact : undefined
-  return { script, alter, agencyWindow, proactiveContact, interaction, automaticDeliverySummary, followUpCommitment, followUpResolutions, continuity, memories, intents, intentUpdates, browserIntents, statePatch, crossConversationActions }
-}
-
-function normalizeContinuitySnapshot(value: unknown): ContinuitySnapshot | undefined {
-  if (!isRecord(value)) return undefined
-  const text = (item: unknown, limit: number) => typeof item === 'string' ? clip(item, limit).trim() : ''
-  const list = (item: unknown, limit: number) => Array.isArray(item)
-    ? item.map(value => text(value, limit)).filter(Boolean).slice(0, 5)
-    : []
-  const current = text(value.current, 500)
-  const next = list(value.next, 300).slice(0, 3)
-  const recent = list(value.recent, 300)
-  const salient = list(value.salient, 400)
-  if (!current && !next.length && !recent.length && !salient.length) return undefined
-  return { current, next, recent, salient }
-}
-
-function normalizeBrowserIntentDraftLoose(value: unknown): BrowserIntentDraft | undefined {
-  if (!isRecord(value) || (value.mode !== 'search' && value.mode !== 'visit') || typeof value.purpose !== 'string') return undefined
-  const query = typeof value.query === 'string' ? clip(value.query, 500) : ''
-  const url = typeof value.url === 'string' ? clip(value.url, 2_000) : ''
-  if (value.mode === 'search' && !query) return undefined
-  if (value.mode === 'visit' && !url) return undefined
-  return {
-    mode: value.mode,
-    ...(query ? { query } : {}), ...(url ? { url } : {}),
-    purpose: clip(value.purpose, 500),
-    timing: value.timing === 'immediate' ? 'immediate' : 'deferred',
-    ...(typeof value.participantId === 'string' ? { participantId: value.participantId.trim() } : {}),
-  }
-}
-
-function normalizeBrowserIntentDraft(draft: BrowserIntentDraft, config: BrowserConfig): BrowserIntentDraft | undefined {
-  const normalized = normalizeBrowserIntentDraftLoose(draft)
-  if (!normalized) return undefined
-  if (normalized.mode === 'search' && !config.allowSearch) return undefined
-  if (normalized.mode === 'visit' && !config.allowVisit) return undefined
-  return normalized
-}
-
-function browserIntentFromPayload(payload: Record<string, unknown>): BrowserIntentDraft | null {
-  return normalizeBrowserIntentDraftLoose({
-    mode: payload?.mode,
-    query: payload?.query,
-    url: payload?.url,
-    purpose: payload?.purpose || 'The character planned to read a public web page.',
-    timing: 'deferred',
-  }) ?? null
-}
-
-function resolveBrowserTarget(draft: BrowserIntentDraft, config: BrowserConfig) {
-  if (draft.mode === 'search') {
-    const template = config.searchUrlTemplate?.trim()
-    if (!template || !template.includes('{query}')) return undefined
-    const target = template.replaceAll('{query}', encodeURIComponent(draft.query ?? ''))
-    return isSafePublicWebUrl(target, config) ? target : undefined
-  }
-  return draft.url && isSafePublicWebUrl(draft.url, config) ? draft.url : undefined
-}
-
-function isSafePublicWebUrl(value: string, config: BrowserConfig) {
-  try {
-    const url = new URL(value)
-    if (url.protocol !== 'https:' && url.protocol !== 'http:') return false
-    if (url.username || url.password) return false
-    const host = url.hostname.toLowerCase().replace(/\.$/, '')
-    if (!host || host === 'localhost' || host.endsWith('.localhost') || host === '::1') return false
-    if (isPrivateHost(host)) return false
-    const blocked = normalizeDomains(config.blockedDomains)
-    const allowed = normalizeDomains(config.allowedDomains)
-    if (blocked.some(domain => domainMatches(host, domain))) return false
-    return !allowed.length || allowed.some(domain => domainMatches(host, domain))
-  } catch {
-    return false
-  }
-}
-
-function normalizeDomains(values: string[] | undefined) {
-  return (values ?? []).map(value => String(value ?? '').trim().toLowerCase().replace(/^\.+|\.+$/g, '')).filter(Boolean)
-}
-
-function domainMatches(host: string, domain: string) { return host === domain || host.endsWith(`.${domain}`) }
-
-function isPrivateHost(host: string) {
-  if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(host)) {
-    const [a, b] = host.split('.').map(Number)
-    return a === 10 || a === 127 || a === 0 || a === 169 && b === 254 || a === 172 && b >= 16 && b <= 31 || a === 192 && b === 168
-  }
-  // Literal IPv6 and IPv4-mapped addresses are not needed for public-web
-  // narration and are safest treated as local/private destinations.
-  return host.includes(':')
-}
-
-function webObservationEntryContent(observation: WebObservation) {
-  if (observation.status === 'success') {
-    const source = observation.title || observation.url || 'a public web page'
-    // The full bounded excerpt is supplied through webContext. Keeping it out
-    // of the ordinary script stream avoids duplicating tokens and prevents
-    // page text from being mistaken for a first-party narrative instruction.
-    return `The character read a public web page: ${source}.`
-  }
-  return `The character's attempted web lookup did not complete: ${clip(observation.summary, 800)}`
-}
-
-function normalizeInteraction(value: unknown, now: Date, runtime: RuntimeConfig): NarrativeInteraction | undefined {
-  if (!isRecord(value) || typeof value.seen !== 'boolean' || !isRecord(value.reply)) return undefined
-  const mode = value.reply.mode
-  if (mode !== 'none' && mode !== 'immediate' && mode !== 'delayed') return undefined
-  const content = typeof value.reply.content === 'string' ? value.reply.content.trim().slice(0, runtime.maxMessageCharacters) : undefined
-  const sendAt = toDate(value.reply.sendAt)
-
-  if (!value.seen) return { seen: false, reply: { mode: 'none' } }
-  if (mode === 'none') return { seen: true, reply: { mode: 'none' } }
-  if (!content) return { seen: true, reply: { mode: 'none' } }
-  if (mode === 'immediate') return { seen: true, reply: { mode, content } }
-  const delay = sendAt ? sendAt.getTime() - now.getTime() : NaN
-  if (!sendAt || delay < runtime.minimumDelayedReplySeconds * 1_000 || delay > runtime.maximumDelayedReplyMinutes * Time.minute) return { seen: true, reply: { mode: 'none' } }
-  return { seen: true, reply: { mode, content, sendAt: sendAt.toISOString() } }
-}
-
-function validMemory(value: unknown): value is MemoryDraft {
-  return isRecord(value) && typeof value.category === 'string' && typeof value.content === 'string' && !!value.content.trim()
-}
-
-function validIntent(value: unknown, from: Date, now: Date, memory?: MemoryConfig): value is IntentDraft {
-  if (!isRecord(value) || typeof value.type !== 'string' || typeof value.summary !== 'string') return false
-  const notBefore = toDate(value.notBefore)
-  if (!notBefore) return false
-  if (!isActiveConsequenceDraft(value)) return notBefore > now
-  const expiresAt = consequenceExpiresAt(value.payload)
-  const payload = value.payload
-  const effect = isRecord(payload) && typeof payload.effect === 'string' ? payload.effect.trim() : ''
-  const strength = isRecord(payload) ? payload.strength : undefined
-  // Consequences are intentionally short-to-medium-lived story pressure,
-  // not a backdoor for permanently rewriting canon. Keep the source time
-  // close to this writing turn and cap their natural lifetime at 30 days.
-  const maximumLifetime = Math.max(1, memory?.activeConsequenceMaxDays ?? 7) * Time.day
-  return !!memory?.activeConsequencesEnabled && !!effect
-    && (strength === undefined || typeof strength === 'number' && Number.isFinite(strength) && strength >= 0 && strength <= 1)
-    && notBefore <= now && notBefore >= from
-    && !!expiresAt && expiresAt > now && expiresAt.getTime() - now.getTime() <= maximumLifetime
-}
-
-type NormalizedIntentUpdate = { id: number; status: 'completed' | 'cancelled'; resolution?: string }
-
-function normalizeIntentUpdates(value: unknown): NormalizedIntentUpdate[] {
-  if (!Array.isArray(value)) return []
-  return value
-    .filter((item): item is Record<string, unknown> => isRecord(item) && Number.isInteger(item.id) && Number(item.id) > 0 && (item.status === 'completed' || item.status === 'cancelled'))
-    .map(item => ({
-      id: Number(item.id), status: item.status as 'completed' | 'cancelled',
-      ...(typeof item.resolution === 'string' && item.resolution.trim() ? { resolution: clip(item.resolution, 1_000) } : {}),
-    }))
-    .slice(0, 8)
-}
-
-function isActiveConsequence(intent: NarrativeIntent) {
-  return intent.type === 'active-consequence' && isRecord(intent.payload) && intent.payload.lifecycle === 'active'
-}
-
-function isActiveConsequenceDraft(intent: Pick<IntentDraft, 'type' | 'payload'> | Record<string, unknown>) {
-  return intent.type === 'active-consequence' && isRecord(intent.payload) && intent.payload.lifecycle === 'active'
-}
-
-function consequenceExpiresAt(payload: unknown) {
-  if (!isRecord(payload)) return undefined
-  return toDate(payload.expiresAt)
-}
-
-function consequenceStrength(payload: unknown, fallback = 0.55) {
-  return clampNumber(isRecord(payload) ? payload.strength : undefined, fallback, 0, 1)
-}
-
-function hasCompactionEvidence(sourceEntryIds: number[] | undefined, entries: ScriptEntry[]) {
-  if (!Array.isArray(sourceEntryIds) || sourceEntryIds.length === 0) return false
-  const ids = new Set(entries.map(entry => entry.id))
-  return sourceEntryIds.some(id => ids.has(id))
-}
-
-function normalizeConversationAction(value: unknown, runtime: RuntimeConfig, permittedParticipantIds: Set<string>, currentParticipantId: string, now = new Date(), proactive = false) {
-  if (!isRecord(value) || typeof value.participantId !== 'string' || !value.participantId || value.participantId === currentParticipantId) return undefined
-  if (!permittedParticipantIds.has(value.participantId) || (value.mode !== 'immediate' && value.mode !== 'delayed')) return undefined
-  const content = typeof value.content === 'string' ? value.content.trim().slice(0, runtime.maxMessageCharacters) : ''
-  if (!content) return undefined
-  const willingness = typeof value.willingness === 'number' && Number.isFinite(value.willingness)
-    ? clampNumber(value.willingness, 0, 0, 1)
-    : undefined
-  if (proactive && (willingness === undefined || willingness < (runtime.proactiveWillingnessThreshold ?? 0.65))) return undefined
-  const reason = typeof value.reason === 'string' ? clip(value.reason, 300) : undefined
-  if (value.mode === 'immediate') return { participantId: value.participantId, mode: value.mode, content, ...(willingness === undefined ? {} : { willingness }), ...(reason ? { reason } : {}) }
-  const sendAt = toDate(value.sendAt)
-  const delay = sendAt ? sendAt.getTime() - now.getTime() : NaN
-  if (!sendAt || delay < runtime.minimumDelayedReplySeconds * 1_000 || delay > runtime.maximumDelayedReplyMinutes * Time.minute) return undefined
-  return { participantId: value.participantId, mode: value.mode, content, sendAt: sendAt.toISOString(), ...(willingness === undefined ? {} : { willingness }), ...(reason ? { reason } : {}) }
-}
-
-function permittedOrGlobal(value: unknown, fallback: string, permittedParticipantIds: Set<string>) {
-  const candidate = typeof value === 'string' ? value.trim() : ''
-  if (candidate && permittedParticipantIds.has(candidate)) return candidate
-  return fallback && permittedParticipantIds.has(fallback) ? fallback : ''
-}
-
-function pickParticipantStatePatch(value: Record<string, unknown>): Partial<ParticipantState> {
-  const patch: Partial<ParticipantState> = {}
-  if (Array.isArray(value.openThreads) && value.openThreads.every(item => typeof item === 'string')) patch.openThreads = value.openThreads.map(item => clip(item, 500)).slice(0, 50)
-  if (Array.isArray(value.relationshipNotes) && value.relationshipNotes.every(item => typeof item === 'string')) patch.relationshipNotes = value.relationshipNotes.map(item => clip(item, 500)).slice(0, 50)
-  return patch
-}
-
-function mergeSetting(base: StorySetting, patch: Partial<StorySetting>): StorySetting {
-  return { ...base, ...patch, character: { ...base.character, ...patch.character }, user: { ...base.user, ...patch.user } }
-}
-
-function mergeParticipantState(base: ParticipantState, patch: Partial<ParticipantState>): ParticipantState {
-  return {
-    ...base, ...patch,
-    openThreads: Array.isArray(patch.openThreads) ? patch.openThreads : base.openThreads,
-    relationshipNotes: Array.isArray(patch.relationshipNotes) ? patch.relationshipNotes : base.relationshipNotes,
-  }
-}
-
-function normalizeParticipantState(value: unknown): ParticipantState {
-  const record = isRecord(value) ? value : {}
-  return {
-    openThreads: Array.isArray(record.openThreads) ? record.openThreads.filter(item => typeof item === 'string').map(item => clip(item, 500)).slice(0, 50) : [],
-    relationshipNotes: Array.isArray(record.relationshipNotes) ? record.relationshipNotes.filter(item => typeof item === 'string').map(item => clip(item, 500)).slice(0, 50) : [],
-    relationshipOverlay: typeof record.relationshipOverlay === 'string' ? clip(record.relationshipOverlay, 4_000) : undefined,
-    unreadMessageCount: Math.max(0, Math.floor(typeof record.unreadMessageCount === 'number' ? record.unreadMessageCount : 0)),
-    pendingReplyCount: Math.max(0, Math.floor(typeof record.pendingReplyCount === 'number' ? record.pendingReplyCount : 0)),
-    lastUserMessageAt: typeof record.lastUserMessageAt === 'string' ? record.lastUserMessageAt : undefined,
-    lastCharacterMessageAt: typeof record.lastCharacterMessageAt === 'string' ? record.lastCharacterMessageAt : undefined,
-  }
-}
-
-function normalizeStoryState(value: unknown): StoryState {
-  const record = isRecord(value) ? value : {}
-  const overlay = isRecord(record.settingOverlay) ? record.settingOverlay : {}
-  const automation = isRecord(record.automation) ? record.automation : {}
-  const continuity = isRecord(record.continuitySnapshot) ? normalizeContinuitySnapshot(record.continuitySnapshot) : undefined
-  return {
-    settingOverlay: {
-      characterProfile: typeof overlay.characterProfile === 'string' ? overlay.characterProfile : undefined,
-      perspective: typeof overlay.perspective === 'string' ? clip(overlay.perspective, 1_000) : undefined,
-      relationship: typeof overlay.relationship === 'string' ? overlay.relationship : undefined,
-      world: typeof overlay.world === 'string' ? overlay.world : undefined,
-      supportingCast: typeof overlay.supportingCast === 'string' ? overlay.supportingCast : undefined,
-      location: typeof overlay.location === 'string' ? overlay.location : undefined,
-      characterTraits: Array.isArray(overlay.characterTraits) ? overlay.characterTraits.filter(item => typeof item === 'string') : [],
-    },
-    activeSceneId: typeof record.activeSceneId === 'number' ? record.activeSceneId : undefined,
-    activeArcId: typeof record.activeArcId === 'number' ? record.activeArcId : undefined,
-    continuitySnapshot: continuity,
-    narrativeUpdateCount: Math.max(0, Math.floor(typeof record.narrativeUpdateCount === 'number' ? record.narrativeUpdateCount : 0)),
-    lastContinuityUpdateAt: typeof record.lastContinuityUpdateAt === 'string' ? record.lastContinuityUpdateAt : undefined,
-    alterSystem: normalizeAlterSystemState(record.alterSystem),
-    agencyWindow: normalizeAgencyWindowState(record.agencyWindow),
-    scenePresence: normalizeScenePresenceState(record.scenePresence),
-    automaticDeliverySummaries: normalizeAutomaticDeliverySummaries(record.automaticDeliverySummaries),
-    automation: {
-      quietUntil: typeof automation.quietUntil === 'string' ? automation.quietUntil : undefined,
-      nextAdvanceAt: typeof automation.nextAdvanceAt === 'string' ? automation.nextAdvanceAt : undefined,
-      lastAutoAdvanceAt: typeof automation.lastAutoAdvanceAt === 'string' ? automation.lastAutoAdvanceAt : undefined,
-      lastUserMessageAt: typeof automation.lastUserMessageAt === 'string' ? automation.lastUserMessageAt : undefined,
-      conversationFollowUpAt: Array.isArray(automation.conversationFollowUpAt)
-        ? automation.conversationFollowUpAt.filter(item => typeof item === 'string').slice(0, 8)
-        : [],
-      conversationFollowUpParticipantId: typeof automation.conversationFollowUpParticipantId === 'string'
-        ? clip(automation.conversationFollowUpParticipantId, 255)
-        : undefined,
-    },
-  }
-}
-
-function participantRelevance(participant: InterludeParticipant) {
-  const state = normalizeParticipantState(participant.state)
-  const pending = state.pendingReplyCount * 2 + state.unreadMessageCount
-  const last = toDate(state.lastUserMessageAt)?.getTime() ?? participant.updatedAt.getTime()
-  return pending * 1_000_000_000 + last
-}
-
-/** Keeps a single due-turn private to one relationship while ensuring that
- * every plan that was already due at the start of the sweep gets a chance to
- * be judged before the next sweep interval. */
-export function groupDueIntents(intents: NarrativeIntent[]) {
-  const batches = new Map<string, NarrativeIntent[]>()
-  for (const intent of [...intents].sort((left, right) => left.notBefore.getTime() - right.notBefore.getTime() || left.id - right.id)) {
-    const family = intent.type === 'proactive-check' ? 'agency' : 'normal'
-    const key = `${intent.participantId || '__global__'}|${family}`
-    const batch = batches.get(key) ?? []
-    batch.push(intent)
-    batches.set(key, batch)
-  }
-  return [...batches.values()]
-}
-
-function resolveParticipantId(explicit: string | undefined, sourceEntryIds: number[] | undefined, entries: ScriptEntry[]) {
-  if (explicit?.trim()) return explicit.trim()
-  const ids = (sourceEntryIds ?? []).map(id => entries.find(entry => entry.id === id)?.participantId).filter(Boolean)
-  return ids[0] ?? ''
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> { return !!value && typeof value === 'object' && !Array.isArray(value) }
-
 export function shouldSupersedeNarrativeRequest(
   inFlightRequestId: number | undefined,
   firstMessageCommittedRequestId: number | undefined,
@@ -4449,238 +3433,10 @@ export function shouldSupersedeNarrativeRequest(
     && !obsoleteRequestIds.has(inFlightRequestId)
 }
 
-function toDate(value: unknown) {
-  if (value instanceof Date) return Number.isNaN(value.getTime()) ? undefined : value
-  if (typeof value !== 'string' && typeof value !== 'number') return undefined
-  const date = new Date(value)
-  return Number.isNaN(date.getTime()) ? undefined : date
-}
-
-const DATABASE_DATE_FIELDS: Record<string, string[]> = {
-  interlude_story: ['cursorAt', 'createdAt', 'updatedAt'],
-  interlude_participant: ['createdAt', 'updatedAt'],
-  interlude_script_entry: ['occurredAt', 'createdAt'],
-  interlude_memory: ['createdAt', 'updatedAt'],
-  interlude_intent: ['notBefore', 'createdAt', 'updatedAt'],
-  interlude_scene: ['startedAt', 'endedAt', 'createdAt', 'updatedAt'],
-  interlude_arc: ['createdAt', 'updatedAt'],
-  interlude_fact: ['lastSeenAt', 'createdAt', 'updatedAt'],
-  interlude_state_patch: ['createdAt', 'appliedAt'],
-  interlude_overlay_snapshot: ['periodStart', 'periodEnd', 'createdAt', 'updatedAt'],
-  interlude_web_observation: ['accessedAt', 'createdAt'],
-}
-
-/** Minato normally materializes timestamp columns as Date objects. Some
- * drivers and hot-reload paths can return ISO strings, so normalize every row
- * crossing the service boundary before time arithmetic or prompt building. */
-export function normalizeDatabaseRow(table: string, value: unknown): any {
-  if (!isRecord(value)) return value
-  const row: Record<string, unknown> = { ...value }
-  for (const field of DATABASE_DATE_FIELDS[table] ?? []) {
-    if (row[field] === null || row[field] === undefined) continue
-    row[field] = toDate(row[field])
-  }
-  if (table === 'interlude_story') {
-    const createdAt = toDate(row.createdAt) ?? new Date()
-    const updatedAt = toDate(row.updatedAt) ?? createdAt
-    row.createdAt = createdAt
-    row.updatedAt = updatedAt
-    row.cursorAt = toDate(row.cursorAt) ?? updatedAt
-    row.state = normalizeStoryState(row.state)
-  } else if (table === 'interlude_participant') {
-    row.createdAt = toDate(row.createdAt) ?? new Date()
-    row.updatedAt = toDate(row.updatedAt) ?? row.createdAt
-    row.state = normalizeParticipantState(row.state)
-  }
-  return row
-}
-
-function sameTimestamp(left: unknown, right: unknown) {
-  const a = toDate(left)
-  const b = toDate(right)
-  return !!a && !!b && Math.abs(a.getTime() - b.getTime()) < 2_000
-}
-
-/** A corrupted/future cursor must never make the narrator "fill in" time
- * backwards. Clamp only the prompt interval; normal successful persistence
- * still advances the stored cursor to the actual wall-clock time. */
-function narrativeCursor(story: InterludeStory, now: Date) {
-  const cursor = toDate(story.cursorAt) ?? now
-  return cursor > now ? now : cursor
-}
-
-function clip(value: unknown, length: number) { return typeof value === 'string' ? value.trim().slice(0, length) : '' }
-
-function clampNumber(value: unknown, fallback: number, min: number, max: number) {
-  if (typeof value !== 'number' || Number.isNaN(value)) return fallback
-  return Math.max(min, Math.min(max, value))
-}
-
-function normalizeFact(value: string) { return value.trim().toLocaleLowerCase().replace(/\s+/g, ' ') }
-
-function limitEntriesByCharacters(entries: ScriptEntry[], limit: number) {
-  if (limit <= 0) return []
-  let used = 0
-  const selected: ScriptEntry[] = []
-  // 从最新条目向前保留，保证压缩请求优先看到场景接续点。
-  for (let index = entries.length - 1; index >= 0; index--) {
-    const entry = entries[index]
-    if (selected.length && used + entry.content.length > limit) break
-    selected.unshift(entry)
-    used += entry.content.length
-  }
-  return selected
-}
-
-function factScore(fact: NarrativeFact, config: MemoryConfig, query = '') {
-  const ageDays = Math.max(0, (Date.now() - fact.lastSeenAt.getTime()) / (24 * Time.hour))
-  const recency = Math.exp(-ageDays / 30)
-  const terms = Array.from(new Set(query.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(term => term.length > 1))).slice(0, 100)
-  const content = fact.content.toLowerCase()
-  const relevance = terms.length ? terms.filter(term => content.includes(term)).length / terms.length : 0
-  return fact.importance * config.factImportanceWeight
-    + fact.confidence * config.factConfidenceWeight
-    + recency * config.factRecencyWeight
-    + relevance * 0.55
-    + (fact.unresolved ? 1 : 0) * config.unresolvedWeight
-}
-
-function createFactQuery(participant: InterludeParticipant | null, userMessage: string | undefined, dueIntents: NarrativeIntent[], supersededIntents: NarrativeIntent[]) {
-  const state = participant ? normalizeParticipantState(participant.state) : undefined
-  return [
-    userMessage ? `Current user message: ${userMessage}` : '',
-    ...(state?.openThreads ?? []).map(thread => `Open thread: ${thread}`),
-    ...(state?.relationshipNotes ?? []).map(note => `Relationship note: ${note}`),
-    ...dueIntents.map(intent => `Due intent: ${intent.summary}`),
-    ...supersededIntents.map(intent => `Superseded plan: ${intent.summary}`),
-  ].filter(Boolean).join('\n')
-}
-
 function formatBufferedUserMessages(messages: BufferedUserMessage[]) {
   if (messages.length === 1) return messages[0].content
   return messages.map((message, index) => {
     const time = message.occurredAt.toISOString()
     return `[连续消息 ${index + 1}，收到时间 ${time}]\n${message.content}`
   }).join('\n\n')
-}
-
-function automaticIntervalMinutes(story: InterludeStory, now: Date, config: AutoAdvanceConfig) {
-  const restWindow = activeRestWindow(config.restWindows, story.setting.timezone, now)
-  if (restWindow) return randomInteger(restWindow.minIntervalMinutes, restWindow.maxIntervalMinutes)
-  return Math.max(1, config.intervalMinutes + randomInteger(-config.jitterMinutes, config.jitterMinutes))
-}
-
-function normalizeFollowUpMinutes(values: number[] | undefined) {
-  const defaults = [10, 20]
-  const normalized = (Array.isArray(values) ? values : defaults)
-    .map(value => Math.floor(Number(value)))
-    .filter(value => Number.isFinite(value) && value >= 1 && value <= 240)
-  return Array.from(new Set(normalized)).sort((left, right) => left - right).slice(0, 6)
-}
-
-function scheduleConversationFollowUps(anchor: Date, config: AutoAdvanceConfig) {
-  let previous = anchor.getTime()
-  return config.followUpMinutes.map(minutes => {
-    const jitter = config.followUpJitterMinutes
-      ? randomInteger(-config.followUpJitterMinutes, config.followUpJitterMinutes)
-      : 0
-    // Never place a later configured pass before an earlier one, even when
-    // jitter is enabled or the owner provides a close custom sequence.
-    const at = Math.max(previous + 1_000, anchor.getTime() + Math.max(1, minutes + jitter) * Time.minute)
-    previous = at
-    return new Date(at)
-  })
-}
-
-function activeRestWindow(windows: RestWindow[], timezone: string, now: Date) {
-  const localMinutes = localClockMinutes(now, timezone)
-  return windows.find(window => {
-    if (!window.enabled) return false
-    const start = clockMinutes(window.start)
-    const end = clockMinutes(window.end)
-    if (start == null || end == null) return false
-    return start <= end
-      ? localMinutes >= start && localMinutes < end
-      : localMinutes >= start || localMinutes < end
-  })
-}
-
-function clockMinutes(value: string) {
-  const matched = /^(\d{1,2}):(\d{2})$/.exec(value?.trim())
-  if (!matched) return undefined
-  const hour = Number(matched[1])
-  const minute = Number(matched[2])
-  return hour >= 0 && hour < 24 && minute >= 0 && minute < 60 ? hour * 60 + minute : undefined
-}
-
-function randomInteger(min: number, max: number) {
-  const lower = Math.floor(Math.min(min, max))
-  const upper = Math.floor(Math.max(min, max))
-  return lower + Math.floor(Math.random() * (upper - lower + 1))
-}
-
-function mergeNote(existing: string | undefined, next: string) {
-  const value = clip(next, 2_000)
-  if (!value) return existing
-  if (!existing) return value
-  if (normalizeFact(existing).includes(normalizeFact(value))) return existing
-  return `${existing}\n${value}`.slice(-6_000)
-}
-
-function patchClaimsMatch(left: string, right: string) {
-  const a = normalizeFact(left).replace(/[，。！？、,.!?；;:：]/g, '')
-  const b = normalizeFact(right).replace(/[，。！？、,.!?；;:：]/g, '')
-  if (!a || !b) return false
-  if (a === b) return true
-  // Allow small wording variations, while avoiding very short claims that
-  // could incorrectly merge contradictory changes.
-  return Math.min(a.length, b.length) >= 8 && (a.includes(b) || b.includes(a))
-}
-
-function statePatchEvidence(entries: ScriptEntry[], timezone: string) {
-  const narrative = entries.filter(entry => entry.kind === 'script' || entry.actor === 'narrator')
-  // Use the narrative timestamp as the turn key. Duplicate rows created at
-  // the same instant must not count as independent evidence.
-  const turns = new Set(narrative.map(entry => entry.occurredAt.getTime())).size
-  const days = new Set(narrative.map(entry => calendarDayKey(entry.occurredAt, timezone))).size
-  return { turns, days }
-}
-
-function startOfUtcWindow(value: Date, windowDays: number) {
-  const size = Math.max(1, Math.floor(windowDays))
-  const epochDay = Math.floor(value.getTime() / Time.day)
-  return new Date(Math.floor(epochDay / size) * size * Time.day)
-}
-
-function groupOverlayPatches(patches: StatePatchProposal[], windowDays = 5) {
-  const groups = new Map<string, { participantId: string; target: StatePatchProposal['target']; from: Date; to: Date; patches: StatePatchProposal[] }>()
-  for (const patch of patches) {
-    const from = startOfUtcWindow(patch.appliedAt ?? patch.createdAt, windowDays)
-    const key = `${patch.participantId}|${patch.target}|${from.toISOString()}`
-    const group = groups.get(key) ?? { participantId: patch.participantId, target: patch.target, from, to: new Date(from.getTime() + windowDays * Time.day), patches: [] }
-    group.patches.push(patch)
-    groups.set(key, group)
-  }
-  return [...groups.values()]
-}
-
-function groupOverlaySnapshots(snapshots: OverlaySnapshot[], windowDays = 10) {
-  const groups = new Map<string, { participantId: string; target: OverlaySnapshot['target']; from: Date; to: Date; snapshots: OverlaySnapshot[] }>()
-  for (const snapshot of snapshots) {
-    const from = startOfUtcWindow(snapshot.periodEnd, windowDays)
-    const key = `${snapshot.participantId}|${snapshot.target}|${from.toISOString()}`
-    const group = groups.get(key) ?? { participantId: snapshot.participantId, target: snapshot.target, from, to: new Date(from.getTime() + windowDays * Time.day), snapshots: [] }
-    group.snapshots.push(snapshot)
-    groups.set(key, group)
-  }
-  return [...groups.values()]
-}
-
-function normalizeMajorEvents(value: unknown, patches: StatePatchProposal[], snapshots: OverlaySnapshot[] = []) {
-  const modelEvents = Array.isArray(value) ? value.filter(item => typeof item === 'string').map(item => clip(item, 600)) : []
-  const retained = [
-    ...snapshots.flatMap(snapshot => snapshot.majorEvents ?? []),
-    ...patches.filter(patch => patch.impact === 'major').map(patch => clip(patch.proposedValue || patch.evidence, 600)),
-  ]
-  return Array.from(new Set([...retained, ...modelEvents].filter(Boolean))).slice(-20)
 }

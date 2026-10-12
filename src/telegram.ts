@@ -51,6 +51,19 @@ interface TelegramMessage {
 }
 interface Update { update_id: number; message?: TelegramMessage }
 
+/** Telegram API failure; retryAfter is set when Telegram asks the client to slow down (HTTP 429). */
+export class TelegramApiError extends Error {
+  constructor(method: string, readonly code?: number, readonly retryAfter?: number) {
+    super(`Telegram ${method} 失败（${code ?? '网络错误'}）。`)
+  }
+}
+
+/** A poison update is skipped after this many consecutive handling failures. */
+const MAX_UPDATE_ATTEMPTS = 3
+/** Each outgoing chunk is attempted at most this many times. */
+const MAX_SEND_ATTEMPTS = 4
+const MAX_RETRY_AFTER_SECONDS = 60
+
 export class TelegramBot implements BotTransport {
   readonly platform = 'telegram' as const
   readonly selfId: string
@@ -66,9 +79,26 @@ export class TelegramBot implements BotTransport {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
       signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(timeout)]),
     })
-    const value = await response.json() as { ok: boolean; result?: T; error_code?: number; parameters?: { retry_after?: number } }
-    if (!response.ok || !value.ok) throw new Error(`Telegram ${method} 失败（${value.error_code ?? response.status}）。`)
+    const value = await response.json().catch(() => undefined) as { ok: boolean; result?: T; error_code?: number; parameters?: { retry_after?: number } } | undefined
+    if (!response.ok || !value?.ok) throw new TelegramApiError(method, value?.error_code ?? response.status, value?.parameters?.retry_after)
     return value.result as T
+  }
+
+  /**
+   * Retries only failures where Telegram did not accept the message: rate
+   * limits, server errors and connection failures. A timeout is not retried
+   * because the message may already have been delivered.
+   */
+  private async sendChunk(chatId: string, text: string) {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await this.api<{ message_id: number }>('sendMessage', { chat_id: chatId, text })
+      } catch (error) {
+        const wait = sendRetryDelay(error, attempt)
+        if (wait == null || this.controller.signal.aborted) throw error
+        await delay(wait, undefined, { signal: this.controller.signal })
+      }
+    }
   }
 
   async sendMessage(chatId: string, content: string) {
@@ -79,7 +109,7 @@ export class TelegramBot implements BotTransport {
       let end = Math.min(4096, remaining.length)
       if (end < remaining.length && /[\uD800-\uDBFF]/.test(remaining[end - 1])) end--
       const text = remaining.slice(0, end)
-      const result = await this.api<{ message_id: number }>('sendMessage', { chat_id: chatId, text })
+      const result = await this.sendChunk(chatId, text)
       ids.push(String(result.message_id))
       remaining = remaining.slice(end)
     }
@@ -156,14 +186,27 @@ export class TelegramBot implements BotTransport {
     const key = `telegram_offset:${this.selfId}`
     let offset = Number(this.storage.getMeta(key) ?? 0)
     if (!Number.isSafeInteger(offset) || offset < 0) offset = 0
+    const failures = { updateId: -1, count: 0 }
+    const advance = (update: Update) => {
+      offset = update.update_id + 1
+      this.storage.setMeta(key, String(offset))
+    }
     while (!this.controller.signal.aborted) {
       try {
         const updates = await this.api<Update[]>('getUpdates', { offset, timeout: 25, allowed_updates: ['message'] })
         for (const update of updates) {
           if (this.controller.signal.aborted) break
-          await this.handleUpdate(update, handle)
-          offset = update.update_id + 1
-          this.storage.setMeta(key, String(offset))
+          try {
+            await this.handleUpdate(update, handle)
+          } catch (error) {
+            if (this.controller.signal.aborted) throw error
+            failures.count = failures.updateId === update.update_id ? failures.count + 1 : 1
+            failures.updateId = update.update_id
+            if (failures.count < MAX_UPDATE_ATTEMPTS) throw error
+            // Without skipping, one message that always fails would block every later message.
+            console.warn(`Telegram 消息连续处理失败 ${failures.count} 次，已跳过该条消息。`)
+          }
+          advance(update)
         }
       } catch {
         if (this.controller.signal.aborted) break
@@ -178,4 +221,15 @@ export class TelegramBot implements BotTransport {
     for (const pending of this.prompts.values()) { clearTimeout(pending.timer); pending.resolve(undefined) }
     this.prompts.clear()
   }
+}
+
+/** Milliseconds to wait before another send attempt, or undefined when the failure must not be retried. */
+export function sendRetryDelay(error: unknown, attempt: number) {
+  if (attempt >= MAX_SEND_ATTEMPTS) return undefined
+  if (error instanceof TelegramApiError) {
+    if (error.code === 429) return Math.min(Math.max(error.retryAfter ?? 1, 1), MAX_RETRY_AFTER_SECONDS) * 1000
+    return error.code != null && error.code >= 500 ? 1000 * 2 ** (attempt - 1) : undefined
+  }
+  // fetch rejects with TypeError when the connection fails before a response arrives.
+  return error instanceof TypeError ? 1000 * 2 ** (attempt - 1) : undefined
 }

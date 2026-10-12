@@ -21,9 +21,15 @@ Telegram getUpdates 长轮询
 | `telegram.ts` | 原生 Bot API、长轮询、图片、白名单、投递和确认回答 |
 | `runtime.ts` | 请求取消、计时器、日志和轻量命令解析 |
 | `database.ts` | Node 内置 SQLite、JSON 记录、查询和接收位置 |
-| `config.ts` | JSON 默认值与校验 |
+| `config.ts` | 配置类型、JSON 默认值与校验 |
 | `commands.ts` | 私聊管理操作 |
-| `service.ts` | 原有持续叙事、调度、参与者、记忆和状态演化 |
+| `service.ts` | 持续叙事主流程：接收消息、串行队列、调度、参与者、记忆和状态演化 |
+| `decision.ts` | 校验和规范化模型返回的 JSON，之后才会保存或投递 |
+| `state.ts` | 规范化已保存的故事、参与者状态和数据库行 |
+| `schedule.ts` | 自动推进、休息窗口和到期意图的时间规则 |
+| `memory-helpers.ts` | 事实检索、压缩输入和设定变化分组的纯函数 |
+| `web-observer.ts`、`web-policy.ts` | 可选网页浏览：Chrome 页面读取，以及公开网页安全规则 |
+| `util.ts` | 通用小工具 |
 | `narrator.ts` | 原生 Messages 请求、提示词分层、缓存和 JSON 输出解析 |
 | `alter.ts`、`agency.ts` | 氛围变化与现实行动容量 |
 | `time.ts`、`logging.ts`、`group-willingness.ts` | 本地时间、日志与群聊意愿 |
