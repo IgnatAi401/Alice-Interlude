@@ -9,7 +9,8 @@ import { createCompactor, createNarrator, hasAnthropicCredentials } from './narr
 import { Logger, Runtime, MessageSession as Session, Time } from './runtime'
 import { AutoAdvanceConfig, activeRestWindow, automaticIntervalMinutes, groupDueIntents, normalizeFollowUpMinutes, scheduleConversationFollowUps } from './schedule'
 import { isTransientDatabaseError, mergeParticipantState, mergeSetting, narrativeCursor, normalizeDatabaseRow, normalizeParticipantState, normalizeStoryState, participantRelevance } from './state'
-import { TelegramEnvironment, isAllowedTelegramSession, readTelegramEnvironment, telegramChatId } from './telegram'
+import { TelegramEnvironment, isAllowedTelegramSession, readTelegramEnvironment, telegramChatId } from './adapters/telegram-private'
+import type { InboundEvent, ReplyHandle } from './router/events'
 import { formatLogTime } from './time'
 import { AgencyConfig, AgencyWindowState, AlterSystemConfig, AlterSystemState, AutomaticDeliverySummary, CompactionDecision, EmotionalOffsetPrompt, FollowUpCommitmentDraft, FollowUpResolutionDraft, GroupContext, GroupMessageContext, IntentDraft, InterludeArc, InterludeParticipant, InterludeScene, InterludeStory, MemoryDraft, NarrativeCompactor, NarrativeDecision, NarrativeFact, NarrativeImage, NarrativeIntent, NarrativeInteraction, NarrativeProvider, NarrativeRequest, OutgoingMessageDraft, OverlaySnapshot, ParticipantState, ProactiveContactDraft, ScriptEntry, ScriptEntryDraft, StatePatchDraft, StatePatchProposal, StorySetting, StoryState, WebObservation, emptyParticipantState, emptyStorySetting, emptyStoryState } from './types'
 import { clampNumber, clip, isRecord, normalizeFact, sameTimestamp, toDate } from './util'
@@ -24,13 +25,16 @@ interface BufferedUserMessage {
   imageSources: string[]
 }
 
+/** The routing fields of a Telegram chat; both a live Session and an InboundEvent can supply them. */
+type ChatIdentity = Pick<Session, 'platform' | 'selfId' | 'userId' | 'channelId' | 'guildId' | 'isDirect' | 'username'>
+
 /** A per-relationship input buffer. Messages are durable immediately, while
  * the narrator waits briefly for the user to finish a short burst. */
 interface BufferedNarrativeTurn {
   storyId: string
   participantId: string
   messages: BufferedUserMessage[]
-  latestSession?: Session
+  latestReply?: ReplyHandle
   /** Context timers return a disposer rather than Node's native Timeout. */
   timer?: () => void
   nextRevision: number
@@ -157,13 +161,13 @@ export class InterludeService {
     await Promise.allSettled([...this.queues.values(), this.databaseWriteQueue])
   }
 
-  canHandleSession(session: Session): boolean {
+  canHandleSession(session: ChatIdentity): boolean {
     return session.isDirect && isAllowedTelegramSession(this.telegramEnvironment, session)
   }
 
   /** Group access uses an explicit group allowlist; group members do not need
    * to be present in the private-message user whitelist. */
-  canHandleGroupSession(session: Session): boolean {
+  canHandleGroupSession(session: ChatIdentity): boolean {
     return !session.isDirect && isAllowedTelegramSession(this.telegramEnvironment, session)
       && !!this.groupRule(telegramChatId(session))
   }
@@ -193,7 +197,7 @@ export class InterludeService {
     return story.platform === 'telegram' && story.selfId === this.telegramEnvironment.botId
   }
 
-  async findStory(session: Session) {
+  async findStory(session: ChatIdentity) {
     if (!this.canHandleSession(session) && !this.canHandleGroupSession(session)) return undefined
     return (await this.dbGet('interlude_story', { id: storyIdForCharacter(session.selfId) }))[0]
   }
@@ -220,7 +224,7 @@ export class InterludeService {
     return canonical
   }
 
-  async findParticipant(session: Session, story?: InterludeStory) {
+  async findParticipant(session: ChatIdentity, story?: InterludeStory) {
     const resolved = story ?? await this.findStory(session)
     if (!resolved) return undefined
     // Bind each relationship lookup to the current story and Telegram chat.
@@ -235,7 +239,7 @@ export class InterludeService {
       .sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())
   }
 
-  async createStory(session: Session, name?: string) {
+  async createStory(session: ChatIdentity, name?: string) {
     if (!this.canHandleSession(session) && !this.canHandleGroupSession(session)) throw new Error('This session is not allowed to use HDS Interlude.')
     const existing = await this.findStory(session)
     if (existing) {
@@ -305,7 +309,7 @@ export class InterludeService {
    * identity fields. Callers that already resolved the participant can pass it
    * in to avoid a second database read.
    */
-  async ensureParticipant(story: InterludeStory, session: Session, now = new Date(), knownExisting?: InterludeParticipant) {
+  async ensureParticipant(story: InterludeStory, session: ChatIdentity, now = new Date(), knownExisting?: InterludeParticipant) {
     const account = this.userAccountRule(session.userId)
     const existing = knownExisting ?? await this.findParticipant(session, story)
     if (existing) {
@@ -696,8 +700,15 @@ export class InterludeService {
     return true
   }
 
-  async receive(session: Session) {
+  async receive(event: InboundEvent) {
     if (this.databaseResetting) return false
+    // Only Telegram private chats are wired into the core so far; other
+    // channels are rejected here until their audience isolation exists.
+    if (event.channel !== 'telegram-private') return false
+    const session: ChatIdentity = {
+      platform: 'telegram', selfId: this.telegramEnvironment.botId, userId: event.senderId,
+      channelId: event.sourceId, isDirect: true, username: event.senderName,
+    }
     // Check before find/create so an unauthorized chat can neither trigger the
     // model nor create a persistent story by merely sending a private message.
     if (!this.canHandleSession(session)) return false
@@ -725,7 +736,7 @@ export class InterludeService {
     // to persist, and lets a due split segment stop before transport begins.
     this.signalIncomingInterruption(story, participant)
     this.reportOperation('summary', 'info', story, 'user-message', '收到参与者私聊消息 参与者=%s', participant.id)
-    const userInput = this.describeUserEvent(session)
+    const userInput = this.describeUserEvent(event)
     if (this.config.logging?.logMessageContent) {
       this.reportOperation('diagnostic', 'info', story, 'user-message', '用户消息内容：%s', userInput.content.slice(0, this.config.logging.previewLength))
     }
@@ -745,7 +756,7 @@ export class InterludeService {
       await this.appendEntry(current.id, {
         kind: 'user-message', actor: 'user', content: userInput.content,
         occurredAt: now.toISOString(), metadata: {
-          platform: session.platform, messageId: session.messageId, personId: incomingParticipant.personId,
+          platform: session.platform, messageId: event.messageId, personId: incomingParticipant.personId,
           ...(userInput.voice.detected ? { voice: userInput.voice } : {}),
         },
       }, now, incomingParticipant.id)
@@ -755,7 +766,7 @@ export class InterludeService {
       return { story: current, participant: incomingParticipant, now, superseded }
     })
     if (!accepted) return false
-    this.bufferUserNarrative(accepted.story, accepted.participant, session, accepted.now, accepted.superseded, userInput.content, userInput.sources)
+    this.bufferUserNarrative(accepted.story, accepted.participant, event.reply, accepted.now, accepted.superseded, userInput.content, userInput.sources)
     if (userInput.sources.length) {
       this.reportOperation('standard', 'info', accepted.story, 'user-message', '当前事件包含图片附件 数量=%d 原生识图=%s', userInput.sources.length, this.config.model.vision?.enabled ? '开启' : '关闭')
     }
@@ -921,7 +932,7 @@ export class InterludeService {
    * Persisted messages wait here briefly before they reach the narrator. This
    * makes “你好 / 在吗 / 我有件事想问” one event without risking message loss.
    */
-  private bufferUserNarrative(story: InterludeStory, participant: InterludeParticipant, session: Session, now: Date, supersededIntents: NarrativeIntent[], content = String(session.content ?? ''), imageSources: string[] = []) {
+  private bufferUserNarrative(story: InterludeStory, participant: InterludeParticipant, reply: ReplyHandle, now: Date, supersededIntents: NarrativeIntent[], content: string, imageSources: string[] = []) {
     const key = participant.id
     const existing = this.bufferedNarrativeTurns.get(key)
     const turn: BufferedNarrativeTurn = existing ?? {
@@ -932,7 +943,7 @@ export class InterludeService {
       this.reportOperation('standard', 'info', story, 'user-message', '新消息到达且首条回复尚未提交，放弃旧请求 参与者=%s 请求=%d', participant.id, turn.inFlightRequestId)
     }
     turn.messages.push({ content, occurredAt: now, supersededIntents, imageSources })
-    turn.latestSession = session
+    turn.latestReply = reply
     if (turn.timer) turn.timer()
     const revision = ++turn.nextRevision
     const delay = Math.max(0, this.config.runtime.userMessageDebounceSeconds ?? 2) * Time.second
@@ -951,9 +962,9 @@ export class InterludeService {
   }
 
   /** Extract structured image segments without treating them as a second event. */
-  private describeUserEvent(session: Session) {
-    const visual = this.describeVisionEvent(session)
-    const detected = extractSessionVoiceCount(session)
+  private describeUserEvent(event: Pick<InboundEvent, 'text' | 'imageSources' | 'voiceCount'>) {
+    const visual = this.describeVisionEvent(event)
+    const detected = extractEventVoiceCount(event)
     return {
       content: visual.content + (detected ? '\n[用户发送了一段语音；当前不支持语音转写。]' : ''),
       sources: visual.sources,
@@ -961,9 +972,9 @@ export class InterludeService {
     }
   }
 
-  private describeVisionEvent(session: Session) {
-    const sources = extractSessionImageSources(session)
-    const text = session.content.trim()
+  private describeVisionEvent(event: Pick<InboundEvent, 'text' | 'imageSources'>) {
+    const sources = extractEventImageSources(event)
+    const text = event.text.trim()
     // The attachment itself is passed through the native multimodal channel.
     // Keep ordinary text free of image placeholders: a failed/filtered fetch
     // must look like no visual input rather than an invitation to invent one.
@@ -971,7 +982,7 @@ export class InterludeService {
     return { content, sources }
   }
 
-  private async loadNativeImages(story: InterludeStory, sources: string[], _session?: Session): Promise<NarrativeImage[]> {
+  private async loadNativeImages(story: InterludeStory, sources: string[]): Promise<NarrativeImage[]> {
     if (!this.config.model.vision?.enabled || !sources.length) return []
     const images: NarrativeImage[] = []
     for (const [index, source] of sources.slice(0, 3).entries()) {
@@ -1119,7 +1130,7 @@ export class InterludeService {
 
       const userMessage = formatBufferedUserMessages(batch)
       const imageSources = Array.from(new Set(batch.flatMap(message => message.imageSources))).slice(0, 3)
-      const images = await this.loadNativeImages(snapshot.story, imageSources, turn.latestSession)
+      const images = await this.loadNativeImages(snapshot.story, imageSources)
       // If another message arrived while an image was being downloaded, put
       // this batch back and let the newer revision compose one combined event.
       if (turn.nextRevision !== revision) {
@@ -1167,7 +1178,7 @@ export class InterludeService {
         return
       }
       if (this.canHandleParticipant(snapshot.participant)) {
-        await this.sendOutgoingMessages(snapshot.story, result.messages, snapshot.participant, turn.latestSession)
+        await this.sendOutgoingMessages(snapshot.story, result.messages, snapshot.participant, turn.latestReply)
       }
       this.scheduleCompaction(turn.storyId)
     } catch (error) {
@@ -2415,7 +2426,7 @@ export class InterludeService {
   }
 
   /**
-   * Immediate replies may reuse the incoming Session; cross-account and timed
+   * Immediate replies may reuse the incoming event's reply handle; cross-account and timed
    * messages are delivered through the target participant's channel instead.
    * This is the boundary that prevents a shared story from accidentally
    * sending every reply back to the account that happened to trigger the turn.
@@ -2424,7 +2435,7 @@ export class InterludeService {
     story: InterludeStory,
     messages: OutgoingMessageDraft[],
     current?: InterludeParticipant,
-    session?: Session,
+    reply?: ReplyHandle,
     shouldCancel?: (target: InterludeParticipant) => boolean,
   ) {
     const delivered: OutgoingMessageDraft[] = []
@@ -2454,8 +2465,8 @@ export class InterludeService {
         if (this.config.logging?.logMessageContent) {
           this.report('info', story, 'intent-due', '主角消息内容：%s', message.content.slice(0, this.config.logging.previewLength))
         }
-        if (session && current?.id === target.id) {
-          await session.send(message.content)
+        if (reply && current?.id === target.id) {
+          await reply.send(message.content)
           delivered.push(message)
           if (message.automaticDelivery) await this.recordAutomaticDelivery(story.id, target.id, message.automaticDelivery, new Date())
           continue
@@ -3380,18 +3391,18 @@ function storyIdForCharacter(selfId: string) { return `character:telegram:${self
 
 function participantIdFor(selfId: string, userId: string) { return `telegram:${selfId}:${userId}` }
 
-function sameParticipantEndpoint(participant: InterludeParticipant, session: Session) {
+function sameParticipantEndpoint(participant: InterludeParticipant, session: ChatIdentity) {
   return participant.platform === 'telegram' && session.platform === 'telegram'
     && participant.selfId === session.selfId && participant.channelId === telegramChatId(session)
 }
 
-function extractSessionImageSources(session: Session) {
-  return (session.imageSources ?? []).filter(source => source.length <= 8 * 1024 * 1024 && /^data:image\//i.test(source))
+function extractEventImageSources(event: Pick<InboundEvent, 'imageSources'>) {
+  return (event.imageSources ?? []).filter(source => source.length <= 8 * 1024 * 1024 && /^data:image\//i.test(source))
 }
 
 /** Count Telegram voice attachments without retaining their binary content. */
-export function extractSessionVoiceCount(session: Pick<Session, 'voiceCount'>) {
-  return session.voiceCount ?? 0
+export function extractEventVoiceCount(event: Pick<InboundEvent, 'voiceCount'>) {
+  return event.voiceCount ?? 0
 }
 
 function isAnimatedImageMime(mime: string) {

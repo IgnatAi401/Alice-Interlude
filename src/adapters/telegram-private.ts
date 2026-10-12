@@ -1,7 +1,8 @@
-import type { MessageSession as Session } from './runtime'
+import type { MessageSession as Session } from '../runtime'
 import { setTimeout as delay } from 'node:timers/promises'
-import type { BotTransport } from './runtime'
-import type { Storage } from './database'
+import type { BotTransport } from '../runtime'
+import type { Storage } from '../database'
+import type { AdapterInboundEvent } from '../router/events'
 
 export interface TelegramEnvironment {
   token: string
@@ -34,6 +35,17 @@ export function isAllowedTelegramSession(env: TelegramEnvironment, session: Pick
     && session.selfId === env.botId
     && session.userId !== env.botId
     && env.chatIds.has(telegramChatId(session))
+}
+
+/** Converts an authorized private-chat Session into a channel-independent event (tier is left to the router). */
+export function telegramPrivateEvent(session: Session, receivedAt = new Date()): AdapterInboundEvent {
+  if (!session.isDirect) throw new Error('只有 Telegram 私聊可以转换为 telegram-private 事件。')
+  return {
+    channel: 'telegram-private', sourceId: telegramChatId(session), participantKey: `tg:${session.userId}`,
+    senderId: session.userId, senderName: session.username, messageId: session.messageId,
+    text: session.content, imageSources: session.imageSources, voiceCount: session.voiceCount,
+    receivedAt, reply: { send: text => session.send(text) },
+  }
 }
 
 interface TelegramMessage {

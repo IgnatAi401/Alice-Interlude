@@ -5,7 +5,8 @@ import { InterludeService } from './service'
 import { Runtime } from './runtime'
 import { Storage } from './database'
 import { registerCommands } from './commands'
-import { assertMacOS, readTelegramEnvironment, TelegramBot } from './telegram'
+import { assertMacOS, readTelegramEnvironment, TelegramBot, telegramPrivateEvent } from './adapters/telegram-private'
+import { routeInbound } from './router/router'
 
 export async function loadConfig(path = resolve('config.json')) {
   let input: unknown
@@ -57,7 +58,7 @@ export async function start() {
         void runtime.dispatchCommand(session)?.catch(() => console.warn('管理命令执行失败。'))
         return
       }
-      if (session.isDirect) { if (config.runtime.captureDirectMessages) await service.receive(session) }
+      if (session.isDirect) { if (config.runtime.captureDirectMessages) await service.receive(routeInbound(telegramPrivateEvent(session))) }
       else await service.receiveGroup(session)
     })
   } finally {
