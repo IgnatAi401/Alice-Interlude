@@ -67,10 +67,12 @@
 - `runtime.conversationFollowUpMinutes`：对话结束后的短期生活补写。
 - `runtime.splitReplyMessages` 和打字延迟：自然拆分多条回复。
 - `runtime.allowProactiveMessages`：是否允许主动可见联系，默认关闭。
-- `memory`：场景压缩阈值、事实数量、人物变化证据和冷却期；检索为本地文本与重要度排序。
+- `memory`：场景压缩阈值、事实数量、人物变化证据和冷却期；检索为全文索引（中文三字片段）与重要度排序。
+- `memory.publicOwnerProfile`：非主人聊天（其他私聊、群聊，以后的网站）里 Alice 可以知道的主人信息，默认为空。这些聊天看不到 `storyDefaults.userProfile`、`relationship` 和主人的私密记忆；只在这里写愿意公开的内容。
 - `agency`：日程、隐私、设备和主动联系间隔。[设计说明](../design/AGENCY_WINDOW.md)
 - `alterSystem`：短期氛围惯性。[设计说明](../design/ALTER_SYSTEM.md)
 - `logging.level`：`silent/error/warn/info/debug`；正文预览默认关闭。
+- `logging.dumpRequests`：仅在 `logging.verbosity` 为 `diagnostic` 时生效，把每次发给模型的完整请求写到 `data/debug/requests/`（不含 API key），用于隐私隔离检查。文件包含私密内容，检查完请删除，平时保持关闭。
 - `blindMode.enabled`：关闭管理命令及业务日志，仅保留周期健康心跳；恢复需要改配置并重启。
 - `browser.enabled`：可选本机 Chrome 网页观察，默认关闭。其它浏览参数控制域名、超时、页数和文本预算。
 

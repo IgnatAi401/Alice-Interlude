@@ -100,6 +100,8 @@ export interface MemoryConfig {
   overlayMonthlyWindowDays?: number
   overlayWeeklySummaryCharacters?: number
   overlayMonthlySummaryCharacters?: number
+  /** What public turns (other chats, groups, later the website) may know about the owner; empty by default. */
+  publicOwnerProfile?: string
 }
 
 export interface RuntimeConfig {
@@ -213,6 +215,8 @@ export interface LoggingConfig {
   logScriptPreview: boolean
   /** Emit user-visible incoming/outgoing message bodies to the terminal log. */
   logMessageContent?: boolean
+  /** With verbosity=diagnostic, write every full model request to data/debug/requests/ for canary checks. */
+  dumpRequests?: boolean
   previewLength: number
 }
 
@@ -229,6 +233,7 @@ export const DEFAULT_MEMORY_CONFIG: MemoryConfig = {
   activeConsequenceDefaultStrength: 0.55, overlayCompressionEnabled: true, overlayRecentDays: 2,
   overlayMonthlyAfterDays: 10, overlayWeeklyWindowDays: 5, overlayMonthlyWindowDays: 10,
   overlayWeeklySummaryCharacters: 1_600, overlayMonthlySummaryCharacters: 2_400,
+  publicOwnerProfile: '',
 }
 
 /** Programmatic callers may omit numeric fields. Normalise them so one
@@ -291,7 +296,7 @@ export const DEFAULT_CONFIG: Config = {
     maxTextCharacters: 20_000, maxExcerptCharacters: 4000, maxObservationsInPrompt: 3, cacheMinutes: 60,
     allowGroupTriggeredResearch: false, logObservationPreview: false },
   logging: { level: 'info', verbosity: 'standard', format: 'layered', colors: true, colorTheme: 'dark', kaomoji: true,
-    logScriptPreview: false, logMessageContent: false, previewLength: 500 },
+    logScriptPreview: false, logMessageContent: false, dumpRequests: false, previewLength: 500 },
 }
 
 function mergeDefaults(defaults: any, input: any, path = 'config'): any {

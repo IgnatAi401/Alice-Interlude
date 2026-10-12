@@ -505,6 +505,18 @@ export interface NarrativeRequest {
   automaticDeliverySummaries?: AutomaticDeliverySummary[]
   /** At most two relationship-local promises, included only on live/due turns. */
   followUpCommitments?: NarrativeIntent[]
+  /** Owner turns only: visitor records, rendered inside <visitor_notes> as quoted material. */
+  visitorNotes?: VisitorNote[]
+  /** Public turns only: memory.publicOwnerProfile, what may be said about the owner. */
+  publicOwnerProfile?: string
+}
+
+export interface VisitorNote {
+  audience: string
+  source: 'script' | 'memory' | 'fact' | 'overlay'
+  kind: string
+  content: string
+  occurredAt: string
 }
 
 export interface GroupMessageContext {

@@ -14,6 +14,9 @@ import type { InboundEvent, ReplyHandle } from './router/events'
 import { resolveTier } from './router/tiers'
 import { Audience, Viewer, derivedAudience, normalizeAudience, visitorAudience } from './memory/audience'
 import { MemoryStore, OWNER_VIEWER } from './memory/store'
+import { ownerNarrativeRequest } from './context/owner'
+import { publicNarrativeRequest } from './context/public'
+import { resolve } from 'node:path'
 import { formatLogTime } from './time'
 import { AgencyConfig, AgencyWindowState, AlterSystemConfig, AlterSystemState, AutomaticDeliverySummary, CompactionDecision, EmotionalOffsetPrompt, FactDraft, FollowUpCommitmentDraft, FollowUpResolutionDraft, GroupContext, GroupMessageContext, IntentDraft, InterludeArc, InterludeParticipant, InterludeScene, InterludeStory, MemoryDraft, NarrativeCompactor, NarrativeDecision, NarrativeFact, NarrativeImage, NarrativeIntent, NarrativeInteraction, NarrativeProvider, NarrativeRequest, OutgoingMessageDraft, OverlaySnapshot, ParticipantState, ProactiveContactDraft, ScriptEntry, ScriptEntryDraft, StatePatchDraft, StatePatchProposal, StorySetting, StoryState, WebObservation, emptyParticipantState, emptyStorySetting, emptyStoryState } from './types'
 import { clampNumber, clip, isRecord, normalizeFact, sameTimestamp, toDate } from './util'
@@ -140,8 +143,12 @@ export class InterludeService {
       reportStandaloneOperation: (verbosity, level, message, ...args) => this.reportStandaloneOperation(verbosity, level, message, ...args),
     })
     const silentModelLogs = this.blindModeConfig.enabled || !['info', 'debug'].includes(config.logging.level)
-    this.narrator = createNarrator(ctx, config.model, silentModelLogs)
-    this.compactor = createCompactor(ctx, config.model, silentModelLogs)
+    // Debug-only full request export for canary checks (roadmap §8); data/ is git-ignored.
+    const dumpRequestsDir = config.logging.dumpRequests && config.logging.verbosity === 'diagnostic'
+      ? resolve('data/debug/requests')
+      : undefined
+    this.narrator = createNarrator(ctx, config.model, silentModelLogs, dumpRequestsDir)
+    this.compactor = createCompactor(ctx, config.model, silentModelLogs, dumpRequestsDir)
     // Start scheduling after construction finishes.
     ctx.setTimeout(() => this.startBackgroundTasks(), 0)
     this.reportStandaloneOperation('summary', 'info', '服务已就绪')
@@ -1535,7 +1542,7 @@ export class InterludeService {
       .sort((left, right) => left.accessedAt.getTime() - right.accessedAt.getTime())
       .slice(-Math.max(1, this.web.config.maxObservationsInPrompt))
     const refreshContinuity = this.shouldRefreshContinuity(story, phase)
-    return this.narrator.decide({
+    const draft: NarrativeRequest = {
       phase, refreshContinuity, outputRecovery, story, from, now, userMessage, images,
       participant: phase === 'advance' ? null : participant,
       // A background turn may see relationship state through these opaque
@@ -1553,7 +1560,16 @@ export class InterludeService {
         ? normalizeStoryState(story.state).automaticDeliverySummaries
         : [],
       followUpCommitments,
-    })
+    }
+    // The context builders are the last step before the model: owner turns
+    // wrap visitor records, public turns keep only allowlisted fields.
+    const account = participant ? this.userAccountRule(participant.userId) : undefined
+    return this.narrator.decide(viewer.tier === 'owner'
+      ? ownerNarrativeRequest(draft)
+      : publicNarrativeRequest(draft, {
+        accountProfile: account ? { profile: account.profile, relationship: account.relationship } : undefined,
+        publicOwnerProfile: this.memoryConfig.publicOwnerProfile ?? '',
+      }))
   }
 
   /** Refresh continuity only on the first automatic pass or every fifteenth
@@ -1638,16 +1654,25 @@ export class InterludeService {
   ) {
     // 先规范化，再写库：不信任模型给出的时间、长度和结构，尤其不能让未来剧情落库。
     const allParticipants = await this.participants(story.id)
-    const permittedParticipantIds = new Set(allParticipants.filter(item => this.canHandleParticipant(item)).map(item => item.id))
-    const refreshContinuity = this.shouldRefreshContinuity(story, phase)
-    const decision = normalizeDecision(
-      raw, from, now, permitMessages, this.config.runtime, this.sharedStoryConfig,
-      participant?.id ?? '', permittedParticipantIds, phase, this.memoryConfig, refreshContinuity,
-    )
     // Live turns inherit their chat's audience; only a participant-free
     // background passage keeps the model's own classification (already
     // forced to private outside advance by normalizeDecision).
     const turnSource = sourceOverride ?? this.sourceAudience(participant)
+    const publicTurn = turnSource !== 'private'
+    // A public turn may only act on its own relationship: no messages to other
+    // accounts (participant ids are guessable), no intents or memories filed
+    // under someone else, no edits to global or foreign consequences.
+    const permittedParticipantIds = new Set(publicTurn
+      ? participant && this.canHandleParticipant(participant) ? [participant.id] : []
+      : allParticipants.filter(item => this.canHandleParticipant(item)).map(item => item.id))
+    // Continuity is a private derived layer: a public turn never saw it and must not overwrite it.
+    const refreshContinuity = turnSource === 'private' && this.shouldRefreshContinuity(story, phase)
+    const decision = normalizeDecision(
+      raw, from, now, permitMessages, this.config.runtime, this.sharedStoryConfig,
+      participant?.id ?? '', permittedParticipantIds, phase, this.memoryConfig, refreshContinuity,
+    )
+    // Without a participant (groups) an intent would become global and surface unwrapped in owner turns.
+    if (publicTurn && !participant) decision.intents = []
     const scriptAudience = sourceOverride || participant ? turnSource : decision.scriptAudience
     let scriptEntry: ScriptEntry | undefined
     if (decision.script) {
@@ -1659,7 +1684,7 @@ export class InterludeService {
         metadata: { phase, interaction: decision.interaction ?? null },
       }, now, participant?.id ?? '', scriptAudience)
     }
-    await this.applyIntentUpdates(story.id, decision.intentUpdates, now, participant?.id)
+    await this.applyIntentUpdates(story.id, decision.intentUpdates, now, participant?.id, publicTurn)
     for (const memory of decision.memories) {
       await this.appendMemory(story.id, memory, now, memory.participantId ?? participant?.id ?? '', derivedAudience([turnSource], memory.audience))
     }
@@ -2075,13 +2100,13 @@ export class InterludeService {
 
   /** Only active consequences visible to the writer may be resolved. This
    * prevents a remote model from changing arbitrary future plans by id. */
-  private async applyIntentUpdates(storyId: string, updates: ReturnType<typeof normalizeIntentUpdates>, now: Date, participantId?: string) {
-    if (!updates.length) return
+  private async applyIntentUpdates(storyId: string, updates: ReturnType<typeof normalizeIntentUpdates>, now: Date, participantId?: string, ownOnly = false) {
+    if (!updates.length || ownOnly && !participantId) return
     const ids = updates.map(update => update.id)
     const rows = await this.dbGet('interlude_intent', { storyId, id: { $in: ids }, status: 'pending' })
     const allowed = new Map(rows
       .filter(isActiveConsequence)
-      .filter(intent => !participantId || !intent.participantId || intent.participantId === participantId)
+      .filter(intent => ownOnly ? intent.participantId === participantId : !participantId || !intent.participantId || intent.participantId === participantId)
       .map(intent => [intent.id, intent]))
     for (const update of updates) {
       const intent = allowed.get(update.id)

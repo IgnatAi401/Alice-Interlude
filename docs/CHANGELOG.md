@@ -9,6 +9,9 @@
 - 记忆类记录新增 `audience` 受众标签；模型输出的记忆、事实和设定变化提案需附带 `private`/`public`，后台推进可附 `scriptAudience`。启动时自动迁移（`schema_version=1`），已有记录全部标为 `private`。
 - 记忆读取统一按受众过滤：非主人私聊和群聊只能读到公开记录和自己的记录。迁移前的旧记录都是 `private`，因此这些聊天之前的历史不再进入它们的上下文。
 - 长期事实检索改用 SQLite FTS5 trigram 全文索引，中文可按三字片段命中（`schema_version=2` 自动建立索引）。
+- 非主人聊天（其他私聊、群聊）改用隔离上下文：看不到 continuity、人物变化、其他参与者、全局计划和主人画像；不能给其他账号发消息或刷新 continuity。新增 `memory.publicOwnerProfile` 配置可以公开的主人信息。
+- 主人回合中的访客记录包装在 `<visitor_notes>` 中，作为引用资料而非指令。
+- 新增调试开关 `logging.dumpRequests`（需 `verbosity=diagnostic`），导出完整模型请求用于隐私检查。
 
 ## 0.1.3 · 独立 Telegram 版
 
