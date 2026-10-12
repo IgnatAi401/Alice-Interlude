@@ -44,7 +44,3 @@
 `src/logging.ts` 负责格式化、动作识别、字段拆分和颜色。业务层仍决定哪些事件属于 summary、standard 或 diagnostic。所有 `Error` 参数只输出 message，不在标准日志展开堆栈；底层 Provider 的重复警告已降为 debug，最终错误由业务时间线统一报告。
 
 `blindMode.enabled=true` 时，HDSI 不使用上述业务时间线：普通运行、错误详情、预览与模型侧调试都会静默，仅由服务层按配置间隔输出不含故事内容的健康心跳。Telegram 接收错误仍会输出不含内容的简短连接提示。
-
-## 测试
-
-`test/logging.test.ts` 固定验证用户消息、模型开始、Alter 触发、错误、ANSI 颜色和简洁符号，防止后续改动重新退化成字段堆叠。

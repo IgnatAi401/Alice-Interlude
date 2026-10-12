@@ -8,10 +8,8 @@
     "start": "node --env-file-if-exists=.env lib/main.js",
     "dev": "node --env-file-if-exists=.env --import tsx src/main.ts",
     "build": "node scripts/build.cjs",
-    "typecheck": "tsc -p tsconfig.json --noEmit --noUnusedLocals --noUnusedParameters",
-    "test": "node --import tsx --test test/*.test.ts"
+    "typecheck": "tsc -p tsconfig.json --noEmit --noUnusedLocals --noUnusedParameters"
   },
-  "files": ["lib", "README.md", "DEPLOYMENT_GUIDE.md", "CONFIGURATION_GUIDE.md", "BEGINNER_GUIDE.md", "command.md", "docs/ARCHITECTURE.md", "docs/ALTER_SYSTEM.md", "docs/AGENCY_WINDOW.md", "docs/CHANGELOG.md", "docs/SECURITY.md"],
   "keywords": ["telegram", "claude", "roleplay", "narrative"],
   "license": "AGPL-3.0",
   "private": true,

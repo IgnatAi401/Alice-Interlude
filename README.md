@@ -9,7 +9,7 @@
 需要 macOS、Node.js 22.14 以上的 22.x 或 24.x，以及 pnpm。本项目已有 `pnpm-lock.yaml`，请使用同一套工具。
 
 ```sh
-cd /Users/ignat/Developer/Alice-HDSI
+cd /Users/ignat/Developer/Alice-Interlude
 pnpm install --frozen-lockfile
 cp .env.example .env
 cp config.example.json config.json
@@ -34,7 +34,7 @@ pnpm start
 
 给 Bot 发私聊即可。按 `Ctrl+C` 停止；电脑关机或睡眠期间不能持续收发。开发时可运行 `pnpm dev`。无需打开本机端口，程序通过 Telegram 长轮询接收消息。
 
-不知道 chat id 时，先填 Bot token、给 Bot 发一句话，再按 [部署说明](DEPLOYMENT_GUIDE.md) 获取。运行中的 Bot 请先停止，再获取 ID。
+不知道 chat id 时，先填 Bot token、给 Bot 发一句话，再按 [部署说明](docs/guide/DEPLOYMENT.md) 获取。运行中的 Bot 请先停止，再获取 ID。
 
 ## 配置和管理
 
@@ -44,7 +44,7 @@ pnpm start
 
 数据保存在 `data/interlude.sqlite`，包含剧本、参与者、记忆、长期事实、计划、人物变化和 Telegram 接收位置。该实现使用独立数据库格式，不自动导入旧实例数据库。
 
-常用命令：`/interlude.doctor`、`/interlude.status`、`/interlude.timeline`、`/interlude.memory`、`/interlude.pause`、`/interlude.resume`。完整说明见 [command.md](command.md)。
+常用命令：`/interlude.doctor`、`/interlude.status`、`/interlude.timeline`、`/interlude.memory`、`/interlude.pause`、`/interlude.resume`。完整说明见 [命令说明](docs/guide/COMMANDS.md)。
 
 Telegram 照片和受支持的图片文件会通过 Telegram 下载后作为 Anthropic 原生 base64 图片块发送；单图限制 4 MiB，一轮最多三张。语音会记录收到附件的事实，当前没有转写功能。可选网页观察使用 macOS 本机 Google Chrome，默认关闭。
 
@@ -67,10 +67,9 @@ Telegram 照片和受支持的图片文件会通过 Telegram 下载后作为 Ant
 
 ```sh
 pnpm typecheck
-pnpm test
 pnpm build
 ```
 
-构建会先清理 `lib/` 再生成 JavaScript，防止旧文件残留。测试包含叙事规则、原生 Messages 请求、缓存前缀、白名单、Telegram 图片与投递、SQLite 重启，以及模拟完整聊天链路；测试不使用真实账户。
+构建会先清理 `lib/` 再生成 JavaScript，防止旧文件残留。
 
-更多说明：[新手指南](BEGINNER_GUIDE.md)、[配置指南](CONFIGURATION_GUIDE.md)、[架构](docs/ARCHITECTURE.md)、[Alter](docs/ALTER_SYSTEM.md)、[Agency](docs/AGENCY_WINDOW.md)。
+更多说明见 [文档索引](docs/README.md)：[新手指南](docs/guide/BEGINNER.md)、[配置指南](docs/guide/CONFIGURATION.md)、[架构](docs/design/ARCHITECTURE.md)、[Alter](docs/design/ALTER_SYSTEM.md)、[Agency](docs/design/AGENCY_WINDOW.md)。

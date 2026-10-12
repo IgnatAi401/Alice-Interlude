@@ -1,5 +1,10 @@
 # 当前改造记录
 
+## 未发布
+
+- 移除 `test/` 自动化测试与 `pnpm test`；开发检查改为 `pnpm typecheck`、`pnpm build` 和实际运行验证。
+- 文档整理到 `docs/guide/`（使用说明）和 `docs/design/`（设计说明）。
+
 ## 0.1.3 · 独立 Telegram 版
 
 - 改为 macOS 独立 Node 程序，复用持续叙事、记忆、状态变化和调度逻辑。

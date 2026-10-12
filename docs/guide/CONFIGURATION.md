@@ -68,8 +68,8 @@
 - `runtime.splitReplyMessages` 和打字延迟：自然拆分多条回复。
 - `runtime.allowProactiveMessages`：是否允许主动可见联系，默认关闭。
 - `memory`：场景压缩阈值、事实数量、人物变化证据和冷却期；检索为本地文本与重要度排序。
-- `agency`：日程、隐私、设备和主动联系间隔。[设计说明](docs/AGENCY_WINDOW.md)
-- `alterSystem`：短期氛围惯性。[设计说明](docs/ALTER_SYSTEM.md)
+- `agency`：日程、隐私、设备和主动联系间隔。[设计说明](../design/AGENCY_WINDOW.md)
+- `alterSystem`：短期氛围惯性。[设计说明](../design/ALTER_SYSTEM.md)
 - `logging.level`：`silent/error/warn/info/debug`；正文预览默认关闭。
 - `blindMode.enabled`：关闭管理命令及业务日志，仅保留周期健康心跳；恢复需要改配置并重启。
 - `browser.enabled`：可选本机 Chrome 网页观察，默认关闭。其它浏览参数控制域名、超时、页数和文本预算。

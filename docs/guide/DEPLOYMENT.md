@@ -54,4 +54,4 @@ pnpm start
 
 只运行一个使用该 token 的接收进程。程序没有自动安装登录项或后台服务，关机后需要手动启动。
 
-如需群聊，用 [配置指南](CONFIGURATION_GUIDE.md) 的群聊例子，同时填写环境白名单和群配置。可选浏览功能需要 Google Chrome 位于 `/Applications/Google Chrome.app`，不需要时保持关闭。
+如需群聊，用 [配置指南](CONFIGURATION.md) 的群聊例子，同时填写环境白名单和群配置。可选浏览功能需要 Google Chrome 位于 `/Applications/Google Chrome.app`，不需要时保持关闭。
