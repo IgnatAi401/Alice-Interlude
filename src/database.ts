@@ -18,7 +18,7 @@ export class Storage {
     this.db.exec('PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;')
     for (const [table, autoId] of Object.entries(TABLES)) {
       this.db.exec(`CREATE TABLE IF NOT EXISTS ${table} (id ${autoId ? 'INTEGER PRIMARY KEY AUTOINCREMENT' : 'TEXT PRIMARY KEY'}, data TEXT NOT NULL CHECK(json_valid(data)))`)
-      for (const field of ['storyId', 'participantId', 'status']) {
+      for (const field of ['storyId', 'participantId', 'status', 'audience']) {
         this.db.exec(`CREATE INDEX IF NOT EXISTS ${table}_${field} ON ${table}(json_extract(data, '$.${field}'))`)
       }
     }
@@ -99,6 +99,13 @@ export class Storage {
     const filter = this.where(query)
     const result = this.db.prepare(`DELETE FROM ${this.table(table)} WHERE ${filter.sql}`).run(...filter.values)
     return { removed: Number(result.changes) }
+  }
+
+  /** Sets a JSON field on rows where it is missing; returns the number of rows changed. Used by one-time migrations. */
+  backfillField(table: string, field: string, value: string) {
+    const column = this.field(field)
+    const result = this.db.prepare(`UPDATE ${this.table(table)} SET data = json_set(data, '$.${field}', ?) WHERE ${column} IS NULL`).run(value)
+    return Number(result.changes)
   }
 
   getMeta(key: string) { return this.db.prepare('SELECT value FROM runtime_meta WHERE key = ?').get(key)?.value as string | undefined }

@@ -22,6 +22,7 @@ Telegram getUpdates 长轮询
 | `router/events.ts`、`router/router.ts` | 与渠道无关的消息类型；Router 是唯一给事件定信任等级的地方 |
 | `router/tiers.ts` | 信任等级、能力表和唯一的 owner 判定 |
 | `capabilities/registry.ts` | 工具注册表：按等级暴露、执行前二次检查 |
+| `memory/audience.ts`、`memory/classify.ts`、`memory/migrate.ts` | 记忆受众规则（唯一实现）、隐私分类提示词、按 `schema_version` 执行的一次性迁移 |
 | `runtime.ts` | 请求取消、计时器、日志和轻量命令解析 |
 | `database.ts` | Node 内置 SQLite、JSON 记录、查询和接收位置 |
 | `config.ts` | 配置类型、JSON 默认值与校验 |
@@ -44,6 +45,8 @@ Telegram getUpdates 长轮询
 一个 Telegram Bot 对应一份共享主剧本。私聊参与者拥有各自关系状态；不同私聊的事实与计划按参与者隔离。每个故事串行提交，SQLite 写入也通过单个队列执行。
 
 Canon 是显式配置的初始设定；Overlay 是证据支持的缓慢变化。场景摘要、剧情弧线、长期事实、记忆和短期余波共同构成受预算约束的连续性包。后台压缩继续使用 Claude，事实检索使用本地文本相关度、重要性、置信度和近期程度。
+
+记忆类记录（剧本条目、记忆、事实、设定变化提案、场景、剧情弧、Overlay 归档）都带 `audience` 受众标签：`private` 只给主人回合，`public` 所有回合可见，`visitor:<key>` 只给该访客和主人。原始条目由宿主按来源定标签；事实、记忆和后台叙事由模型按隐私标准分类，但引用了访客条目的结果固定归该访客。目前只完成写入侧，读取侧过滤属于阶段 2 后续工作。
 
 当前新消息可以替换首条回复尚未提交的旧模型请求。延迟回复和后续分段保存为意图，到期重新检查当前参与者授权再投递。群聊按群 chat id 授权，管理操作仅限私聊。
 

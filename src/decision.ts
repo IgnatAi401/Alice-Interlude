@@ -5,6 +5,7 @@ import { normalizeAutomaticDeliverySummary, normalizeContinuitySnapshot, normali
 import { BrowserIntentDraft, FollowUpCommitmentDraft, FollowUpResolutionDraft, GroupContext, IntentDraft, MemoryDraft, NarrativeDecision, NarrativeIntent, NarrativeInteraction, NarrativeRequest, OutgoingMessageDraft, ParticipantState, ScenePresenceDraft, ScenePresenceState, ScriptEntry } from './types'
 import { clampNumber, clip, isRecord, toDate } from './util'
 import { normalizeBrowserIntentDraftLoose } from './web-policy'
+import { normalizeClassifiedAudience } from './memory/audience'
 
 /** Validates and normalizes the JSON a narrator model returns before anything is persisted or sent. */
 
@@ -172,8 +173,16 @@ export function normalizeDecision(raw: NarrativeDecision, from: Date, now: Date,
   // Optional memories are model suggestions, not a source of truth.  Never
   // let a model turn an invented online contact into durable retrieval data.
   const memories = Array.isArray(raw?.memories)
-    ? raw.memories.filter(validMemory).map(memory => ({ ...memory, participantId: permittedOrGlobal(memory.participantId, currentParticipantId, permittedParticipantIds) }))
+    ? raw.memories.filter(validMemory).map(memory => ({
+      ...memory,
+      participantId: permittedOrGlobal(memory.participantId, currentParticipantId, permittedParticipantIds),
+      // This is only the model's label; the host still applies source rules before storing.
+      audience: normalizeClassifiedAudience(memory.audience),
+    }))
     : []
+  // Only background life passages may classify their own script; live turns
+  // inherit the audience of the chat that caused them.
+  const scriptAudience = phase === 'advance' ? normalizeClassifiedAudience(raw?.scriptAudience) : 'private'
   const intents = Array.isArray(raw?.intents) ? raw.intents
     .filter(intent => !isRecord(intent) || intent.type !== 'follow-up-commitment')
     .filter(intent => validIntent(intent, from, now, memory))
@@ -204,7 +213,7 @@ export function normalizeDecision(raw: NarrativeDecision, from: Date, now: Date,
     : []
   const agencyWindow = isRecord(raw?.agencyWindow) ? raw.agencyWindow : undefined
   const proactiveContact = isRecord(raw?.proactiveContact) ? raw.proactiveContact : undefined
-  return { script, alter, agencyWindow, proactiveContact, interaction, automaticDeliverySummary, followUpCommitment, followUpResolutions, continuity, memories, intents, intentUpdates, browserIntents, statePatch, crossConversationActions }
+  return { script, scriptAudience, alter, agencyWindow, proactiveContact, interaction, automaticDeliverySummary, followUpCommitment, followUpResolutions, continuity, memories, intents, intentUpdates, browserIntents, statePatch, crossConversationActions }
 }
 
 export function normalizeInteraction(value: unknown, now: Date, runtime: RuntimeConfig): NarrativeInteraction | undefined {

@@ -7,6 +7,7 @@ import { Storage } from './database'
 import { registerCommands } from './commands'
 import { assertMacOS, readTelegramEnvironment, TelegramBot, telegramPrivateEvent } from './adapters/telegram-private'
 import { routeInbound } from './router/router'
+import { runMigrations } from './memory/migrate'
 
 export async function loadConfig(path = resolve('config.json')) {
   let input: unknown
@@ -25,6 +26,7 @@ export async function start() {
   const config = await loadConfig()
   await mkdir(resolve('data'), { recursive: true })
   const storage = new Storage(resolve('data/interlude.sqlite'))
+  runMigrations(storage)
   const runtime = new Runtime(storage, config.logging.level === 'debug')
   const bot = new TelegramBot(env, storage, config.model.vision?.enabled === true)
   runtime.bots.push(bot)

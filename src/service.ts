@@ -8,12 +8,13 @@ import { createFactQuery, factScore, groupOverlayPatches, groupOverlaySnapshots,
 import { createCompactor, createNarrator, hasAnthropicCredentials } from './narrator'
 import { Logger, Runtime, MessageSession as Session, Time } from './runtime'
 import { AutoAdvanceConfig, activeRestWindow, automaticIntervalMinutes, groupDueIntents, normalizeFollowUpMinutes, scheduleConversationFollowUps } from './schedule'
-import { isTransientDatabaseError, mergeParticipantState, mergeSetting, narrativeCursor, normalizeDatabaseRow, normalizeParticipantState, normalizeStoryState, participantRelevance } from './state'
+import { AUDIENCE_TABLES, isTransientDatabaseError, mergeParticipantState, mergeSetting, narrativeCursor, normalizeDatabaseRow, normalizeParticipantState, normalizeStoryState, participantRelevance } from './state'
 import { TelegramEnvironment, isAllowedTelegramSession, readTelegramEnvironment, telegramChatId } from './adapters/telegram-private'
 import type { InboundEvent, ReplyHandle } from './router/events'
 import { resolveTier } from './router/tiers'
+import { Audience, derivedAudience, normalizeAudience, visitorAudience } from './memory/audience'
 import { formatLogTime } from './time'
-import { AgencyConfig, AgencyWindowState, AlterSystemConfig, AlterSystemState, AutomaticDeliverySummary, CompactionDecision, EmotionalOffsetPrompt, FollowUpCommitmentDraft, FollowUpResolutionDraft, GroupContext, GroupMessageContext, IntentDraft, InterludeArc, InterludeParticipant, InterludeScene, InterludeStory, MemoryDraft, NarrativeCompactor, NarrativeDecision, NarrativeFact, NarrativeImage, NarrativeIntent, NarrativeInteraction, NarrativeProvider, NarrativeRequest, OutgoingMessageDraft, OverlaySnapshot, ParticipantState, ProactiveContactDraft, ScriptEntry, ScriptEntryDraft, StatePatchDraft, StatePatchProposal, StorySetting, StoryState, WebObservation, emptyParticipantState, emptyStorySetting, emptyStoryState } from './types'
+import { AgencyConfig, AgencyWindowState, AlterSystemConfig, AlterSystemState, AutomaticDeliverySummary, CompactionDecision, EmotionalOffsetPrompt, FactDraft, FollowUpCommitmentDraft, FollowUpResolutionDraft, GroupContext, GroupMessageContext, IntentDraft, InterludeArc, InterludeParticipant, InterludeScene, InterludeStory, MemoryDraft, NarrativeCompactor, NarrativeDecision, NarrativeFact, NarrativeImage, NarrativeIntent, NarrativeInteraction, NarrativeProvider, NarrativeRequest, OutgoingMessageDraft, OverlaySnapshot, ParticipantState, ProactiveContactDraft, ScriptEntry, ScriptEntryDraft, StatePatchDraft, StatePatchProposal, StorySetting, StoryState, WebObservation, emptyParticipantState, emptyStorySetting, emptyStoryState } from './types'
 import { clampNumber, clip, isRecord, normalizeFact, sameTimestamp, toDate } from './util'
 import { normalizeBrowserIntentDraft } from './web-policy'
 import { WebObserver } from './web-observer'
@@ -125,7 +126,7 @@ export class InterludeService {
       dbGet: (table, query, options) => this.dbGet(table, query, options),
       dbCreate: (table, data) => this.dbCreate(table, data),
       dbSet: (table, query, data) => this.dbSet(table, query, data),
-      appendEntry: (storyId, entry, now, participantId) => this.appendEntry(storyId, entry, now, participantId),
+      appendEntry: (storyId, entry, now, participantId) => this.appendEntry(storyId, entry, now, participantId ?? '', 'private'),
       appendIntent: (storyId, intent, now, participantId) => this.appendIntent(storyId, intent, now, participantId),
       report: (level, story, phase, message, ...args) => this.report(level, story, phase, message, ...args),
       reportOperation: (verbosity, level, story, phase, message, ...args) => this.reportOperation(verbosity, level, story, phase, message, ...args),
@@ -189,6 +190,25 @@ export class InterludeService {
   canManageSession(session: ChatIdentity): boolean {
     return this.canHandleSession(session)
       && resolveTier('telegram-private', telegramChatId(session), this.telegramEnvironment.ownerChatId) === 'owner'
+  }
+
+  private isOwnerParticipant(participant: InterludeParticipant) {
+    return participant.platform === 'telegram'
+      && resolveTier('telegram-private', participant.channelId, this.telegramEnvironment.ownerChatId) === 'owner'
+  }
+
+  /**
+   * Audience of raw records caused by a chat (roadmap §4.3 host rules): the
+   * owner chat and system events are private; any other chat stays with that
+   * visitor. A model never decides this.
+   */
+  private sourceAudience(participant?: InterludeParticipant | null): Audience {
+    // participantKey matches telegramPrivateEvent: 'tg:<userId>'.
+    return !participant || this.isOwnerParticipant(participant) ? 'private' : visitorAudience(`tg:${participant.userId}`)
+  }
+
+  private async sourceAudienceForId(participantId: string) {
+    return participantId ? this.sourceAudience(await this.getParticipant(participantId)) : 'private'
   }
 
   /** Background life updates only require the bot account to remain enabled. */
@@ -270,7 +290,7 @@ export class InterludeService {
     await this.appendEntry(story.id, {
       kind: 'setup', actor: 'system', content: `The story begins with ${setting.character.name}.`,
       occurredAt: now.toISOString(), metadata: {},
-    }, now)
+    }, now, '', 'private')
     await this.scheduleNextAutomaticAdvance(story.id, now)
     return story
   }
@@ -360,7 +380,7 @@ export class InterludeService {
       kind: 'participant-joined', actor: 'system',
       content: `${participant.displayName} entered the character's relationship network.`,
       occurredAt: now.toISOString(), metadata: { personId: participant.personId },
-    }, now, participant.id)
+    }, now, participant.id, this.sourceAudience(participant))
     return participant
   }
 
@@ -428,7 +448,7 @@ export class InterludeService {
     await this.appendEntry(story.id, {
       kind: 'admin-note', actor: 'system', content: `[管理员注记] ${text}`,
       occurredAt: now.toISOString(), metadata: { source: 'administrator' },
-    }, now)
+    }, now, '', 'private')
     this.scheduleCompaction(story.id)
     return true
   }
@@ -441,7 +461,7 @@ export class InterludeService {
     await this.dbCreate('interlude_fact', {
       storyId: story.id, participantId: '', scope, content: text,
       importance: 0.8, confidence: 1, unresolved: false,
-      status: 'active', sourceEntryIds: [], lastSeenAt: now, createdAt: now, updatedAt: now,
+      status: 'active', sourceEntryIds: [], audience: 'private', lastSeenAt: now, createdAt: now, updatedAt: now,
     })
     return true
   }
@@ -691,7 +711,7 @@ export class InterludeService {
         kind: 'group-message', actor: 'user', content: session.content,
         occurredAt: now.toISOString(),
         metadata: { groupId, senderId, senderName, channelId: session.channelId },
-      }, now)
+      }, now, '', groupAudience(groupId))
       await this.pauseAutomaticAdvanceAfterUserMessage(current.id, now)
     })
     this.bufferGroupMessage(story, rule, session, { senderId, senderName, content: session.content, occurredAt: now, direction: 'user' }, mentionedBot, quotedBot)
@@ -758,7 +778,7 @@ export class InterludeService {
           platform: session.platform, messageId: event.messageId, personId: incomingParticipant.personId,
           ...(userInput.voice.detected ? { voice: userInput.voice } : {}),
         },
-      }, now, incomingParticipant.id)
+      }, now, incomingParticipant.id, this.sourceAudience(incomingParticipant))
       // Messages are persisted at arrival. The model request itself is
       // debounced below, so a burst can become one coherent writing turn.
       await this.pauseAutomaticAdvanceAfterUserMessage(current.id, now)
@@ -863,14 +883,14 @@ export class InterludeService {
       const result = await this.serial(story.id, async () => {
         if (this.databaseResetting || !succeeded) return { content: '', messages: [] as OutgoingMessageDraft[] }
         const current = await this.getStory(story.id)
-        const messages = await this.persistDecision(current, null, decision, snapshot.from, snapshot.now, false, 'user-message')
+        const messages = await this.persistDecision(current, null, decision, snapshot.from, snapshot.now, false, 'user-message', [], groupAudience(turn.groupId))
         const content = normalizeGroupVisibleReply(decision.groupReply, decision.interaction, this.config.runtime.maxMessageCharacters)
         if (content) {
           await this.appendEntry(current.id, {
             kind: 'character-group-message', actor: 'character', content,
             occurredAt: snapshot.now.toISOString(),
             metadata: { groupId: turn.groupId, channelId: turn.channelId },
-          }, snapshot.now)
+          }, snapshot.now, '', groupAudience(turn.groupId))
         }
         await this.dbSet('interlude_story', { id: current.id }, { cursorAt: snapshot.now, updatedAt: new Date() })
         if (succeeded) await this.scheduleConversationFollowUpsAfterTurn(current.id, snapshot.now, decision.interaction)
@@ -1312,7 +1332,7 @@ export class InterludeService {
       await this.appendEntry(story.id, {
         kind: 'character-message', actor: 'character', content,
         occurredAt: now.toISOString(), metadata: { visible: true, splitSegment: true },
-      }, now, participant.id)
+      }, now, participant.id, this.sourceAudience(participant))
       await this.recordCharacterMessage(participant, now)
       await this.dbSet('interlude_intent', { id: intent.id }, { status: 'completed', updatedAt: now })
     }
@@ -1605,6 +1625,8 @@ export class InterludeService {
     permitMessages: boolean,
     phase: NarrativeRequest['phase'],
     contextIntents: NarrativeIntent[] = [],
+    /** Set for turns that are not tied to a participant but still come from a public chat (groups). */
+    sourceOverride?: Audience,
   ) {
     // 先规范化，再写库：不信任模型给出的时间、长度和结构，尤其不能让未来剧情落库。
     const allParticipants = await this.participants(story.id)
@@ -1614,6 +1636,11 @@ export class InterludeService {
       raw, from, now, permitMessages, this.config.runtime, this.sharedStoryConfig,
       participant?.id ?? '', permittedParticipantIds, phase, this.memoryConfig, refreshContinuity,
     )
+    // Live turns inherit their chat's audience; only a participant-free
+    // background passage keeps the model's own classification (already
+    // forced to private outside advance by normalizeDecision).
+    const turnSource = sourceOverride ?? this.sourceAudience(participant)
+    const scriptAudience = sourceOverride || participant ? turnSource : decision.scriptAudience
     let scriptEntry: ScriptEntry | undefined
     if (decision.script) {
       scriptEntry = await this.appendEntry(story.id, {
@@ -1622,10 +1649,12 @@ export class InterludeService {
         content: decision.script,
         occurredAt: now.toISOString(),
         metadata: { phase, interaction: decision.interaction ?? null },
-      }, now, participant?.id ?? '')
+      }, now, participant?.id ?? '', scriptAudience)
     }
     await this.applyIntentUpdates(story.id, decision.intentUpdates, now, participant?.id)
-    for (const memory of decision.memories) await this.appendMemory(story.id, memory, now, memory.participantId ?? participant?.id ?? '')
+    for (const memory of decision.memories) {
+      await this.appendMemory(story.id, memory, now, memory.participantId ?? participant?.id ?? '', derivedAudience([turnSource], memory.audience))
+    }
     for (const intent of decision.intents) {
       // A reminder or promise created while handling a user's message is a
       // response to that relationship, even if it becomes due much later.
@@ -1827,7 +1856,7 @@ export class InterludeService {
       await this.appendEntry(story.id, {
         kind: 'character-message', actor: 'character', content: first,
         occurredAt: now.toISOString(), metadata: { visible: true, interaction: interaction ?? null },
-      }, now, message.participantId)
+      }, now, message.participantId, this.sourceAudience(allParticipants.find(item => item.id === message.participantId)))
       const target = allParticipants.find(item => item.id === message.participantId)
       if (target) await this.recordCharacterMessage(target, now)
       // The narrator may have spent tens of seconds generating before this
@@ -1946,22 +1975,22 @@ export class InterludeService {
     }
   }
 
-  private async appendEntry(storyId: string, entry: ScriptEntryDraft, now: Date, participantId = '') {
+  private async appendEntry(storyId: string, entry: ScriptEntryDraft, now: Date, participantId: string, audience: Audience) {
     const occurredAt = toDate(entry.occurredAt) ?? now
     const created = await this.dbCreate('interlude_script_entry', {
       storyId, participantId, kind: clip(entry.kind, 32) || 'life', actor: clip(entry.actor ?? 'character', 32),
       content: clip(entry.content, 12_000), occurredAt,
-      metadata: isRecord(entry.metadata) ? entry.metadata : {}, createdAt: now,
+      metadata: isRecord(entry.metadata) ? entry.metadata : {}, audience: normalizeAudience(audience), createdAt: now,
     })
     // Scene entry counts are derived during compaction. Avoiding a second
     // SQLite write here keeps every durable script append atomic and cheap.
     return normalizeDatabaseRow('interlude_script_entry', created) as ScriptEntry
   }
 
-  private async appendMemory(storyId: string, memory: MemoryDraft, now: Date, participantId = '') {
+  private async appendMemory(storyId: string, memory: MemoryDraft, now: Date, participantId: string, audience: Audience) {
     await this.dbCreate('interlude_memory', {
       storyId, participantId, category: clip(memory.category, 32) || 'fact', content: clip(memory.content, 4_000),
-      importance: clampNumber(memory.importance, 0.5, 0, 1), status: 'active', sourceEntryId: null,
+      importance: clampNumber(memory.importance, 0.5, 0, 1), status: 'active', sourceEntryId: null, audience: normalizeAudience(audience),
       createdAt: now, updatedAt: now,
     })
   }
@@ -2207,7 +2236,7 @@ export class InterludeService {
           await this.appendEntry(storyId, {
             kind: 'character-message', actor: 'character', content,
             occurredAt: now.toISOString(), metadata: { visible: true, splitSegment: true },
-          }, now, participant.id)
+          }, now, participant.id, this.sourceAudience(participant))
           await this.recordCharacterMessage(participant, now)
           await this.dbSet('interlude_intent', { id: intent.id }, { status: 'completed', updatedAt: now })
         }
@@ -2412,7 +2441,7 @@ export class InterludeService {
         content,
         occurredAt: now.toISOString(),
         metadata: { intentIds: matching.map(intent => intent.id), interruptedDrafts },
-      }, now, participantId)
+      }, now, participantId, await this.sourceAudienceForId(participantId))
       completed = true
       return matching
     } finally {
@@ -2772,7 +2801,7 @@ export class InterludeService {
     let arc = await this.activeArc(story.id)
     if (!arc) {
       await this.dbCreate('interlude_arc', {
-        storyId: story.id, status: 'active', title: 'Beginning', summary: '', sceneCount: 0,
+        storyId: story.id, status: 'active', title: 'Beginning', summary: '', sceneCount: 0, audience: 'private',
         createdAt: now, updatedAt: now,
       })
       arc = await this.activeArc(story.id)
@@ -2781,7 +2810,7 @@ export class InterludeService {
     if (!scene) {
       await this.dbCreate('interlude_scene', {
         storyId: story.id, status: 'active', startedAt: now, endedAt: null,
-        hook: '', summary: '', entryCount: 0, lastEntryId: null, createdAt: now, updatedAt: now,
+        hook: '', summary: '', entryCount: 0, lastEntryId: null, audience: 'private', createdAt: now, updatedAt: now,
       })
       scene = await this.activeScene(story.id)
       if (arc) await this.dbSet('interlude_arc', { id: arc.id }, { sceneCount: arc.sceneCount + 1, updatedAt: now })
@@ -2899,7 +2928,7 @@ export class InterludeService {
       if (!summary) continue
       await this.dbCreate('interlude_overlay_snapshot', {
         storyId: story.id, participantId: group.participantId, target: group.target, tier: 'weekly', periodStart: group.from, periodEnd: group.to,
-        summary, majorEvents: normalizeMajorEvents(decision.majorEvents, group.patches), sourcePatchIds: group.patches.map(patch => patch.id), status: 'active', createdAt: now, updatedAt: now,
+        summary, majorEvents: normalizeMajorEvents(decision.majorEvents, group.patches), sourcePatchIds: group.patches.map(patch => patch.id), status: 'active', audience: 'private', createdAt: now, updatedAt: now,
       })
       for (const patch of group.patches) await this.dbSet('interlude_state_patch', { id: patch.id }, { status: 'compacted' })
       changed = true
@@ -2917,7 +2946,7 @@ export class InterludeService {
       if (!summary) continue
       await this.dbCreate('interlude_overlay_snapshot', {
         storyId: story.id, participantId: group.participantId, target: group.target, tier: 'monthly', periodStart: group.from, periodEnd: group.to,
-        summary, majorEvents: normalizeMajorEvents(decision.majorEvents, [], group.snapshots), sourcePatchIds: group.snapshots.flatMap(snapshot => snapshot.sourcePatchIds), status: 'active', createdAt: now, updatedAt: now,
+        summary, majorEvents: normalizeMajorEvents(decision.majorEvents, [], group.snapshots), sourcePatchIds: group.snapshots.flatMap(snapshot => snapshot.sourcePatchIds), status: 'active', audience: 'private', createdAt: now, updatedAt: now,
       })
       for (const snapshot of group.snapshots) await this.dbSet('interlude_overlay_snapshot', { id: snapshot.id }, { status: 'superseded', updatedAt: now })
       changed = true
@@ -3037,14 +3066,17 @@ export class InterludeService {
     }
   }
 
-  private async persistFact(storyId: string, draft: { scope: NarrativeFact['scope']; content: string; participantId?: string; importance?: number; confidence?: number; unresolved?: boolean; sourceEntryIds?: number[] }, entries: ScriptEntry[], now: Date) {
+  private async persistFact(storyId: string, draft: FactDraft, entries: ScriptEntry[], now: Date) {
     const content = clip(draft.content, this.memoryConfig.factContentCharacters)
     if (!content) return
     const participantId = resolveParticipantId(draft.participantId, draft.sourceEntryIds, entries)
+    const sourceEntryIds = (draft.sourceEntryIds ?? []).filter(id => entries.some(entry => entry.id === id)).slice(0, 20)
+    const audience = sourceDerivedAudience(sourceEntryIds, entries, draft.audience)
     const existing = await this.dbGet('interlude_fact', { storyId, status: 'active' })
     // 当前先做完全规范化匹配的去重；更复杂的语义去重可在检索层升级时替换。
-    const same = existing.find(fact => normalizeFact(fact.content) === normalizeFact(content) && (!fact.participantId || fact.participantId === participantId))
-    const sourceEntryIds = (draft.sourceEntryIds ?? []).filter(id => entries.some(entry => entry.id === id)).slice(0, 20)
+    // Only merge within one audience so a public duplicate never absorbs private evidence.
+    const same = existing.find(fact => normalizeFact(fact.content) === normalizeFact(content)
+      && (!fact.participantId || fact.participantId === participantId) && fact.audience === audience)
     // Promise facts are unresolved by default, unless the compactor explicitly
     // says that the promise has already been fulfilled or closed.
     const unresolved = draft.unresolved === true || (draft.unresolved === undefined && draft.scope === 'promise')
@@ -3064,7 +3096,7 @@ export class InterludeService {
     await this.dbCreate('interlude_fact', {
       storyId, participantId, scope: draft.scope, content, importance: clampNumber(draft.importance, 0.5, 0, 1),
       confidence: clampNumber(draft.confidence, 0.5, 0, 1), unresolved,
-      status: 'active', sourceEntryIds,
+      status: 'active', sourceEntryIds, audience,
       lastSeenAt: now, createdAt: now, updatedAt: now,
     })
   }
@@ -3077,12 +3109,13 @@ export class InterludeService {
     const proposedValue = clip(draft.proposedValue, 4_000)
     const impact = draft.impact === 'major' ? 'major' : 'minor'
     if (!path || !proposedValue || !sourceEntryIds.length) return
+    const audience = sourceDerivedAudience(sourceEntryIds, entries, draft.audience)
 
     // Merge repeated proposals for one setting path before evaluating them.
     const candidates = await this.dbGet('interlude_state_patch', {
       storyId: story.id, participantId, target: draft.target, path,
     }) as StatePatchProposal[]
-    const matching = candidates.filter(candidate => patchClaimsMatch(candidate.proposedValue, proposedValue))
+    const matching = candidates.filter(candidate => candidate.audience === audience && patchClaimsMatch(candidate.proposedValue, proposedValue))
     if (matching.some(candidate => candidate.status === 'applied' || candidate.status === 'compacted')) return
     const candidate = matching.find(item => item.status === 'proposed')
     const mergedSourceEntryIds = Array.from(new Set([
@@ -3100,7 +3133,7 @@ export class InterludeService {
     const proposal = candidate ?? await this.dbCreate('interlude_state_patch', {
       storyId: story.id, participantId, target: draft.target, path, proposedValue,
       evidence: clip(mergedEvidenceText, 4_000), confidence: mergedConfidence, impact,
-      status: 'proposed', sourceEntryIds: mergedSourceEntryIds, createdAt: now, appliedAt: null,
+      status: 'proposed', sourceEntryIds: mergedSourceEntryIds, audience, createdAt: now, appliedAt: null,
     })
     if (candidate?.id) {
       await this.dbSet('interlude_state_patch', { id: candidate.id }, {
@@ -3315,7 +3348,11 @@ export class InterludeService {
     }
   }
 
-  private dbCreate(table: string, data: unknown): Promise<any> {
+  private dbCreate(table: string, input: unknown): Promise<any> {
+    // Last line of defence: a memory record written without an audience is private (S6).
+    const data = isRecord(input) && (AUDIENCE_TABLES as readonly string[]).includes(table)
+      ? { ...input, audience: normalizeAudience(input.audience) }
+      : input
     return this.dbWrite(async () => {
       try {
         return await this.ctx.database.create(table as never, data as never)
@@ -3405,6 +3442,17 @@ export function extractEventVoiceCount(event: Pick<InboundEvent, 'voiceCount'>) 
 
 function isAnimatedImageMime(mime: string) {
   return mime === 'image/gif' || mime === 'image/webp' || mime === 'image/apng'
+}
+
+/** Audience of a compaction result from the entries it cites (see derivedAudience). */
+function sourceDerivedAudience(sourceEntryIds: readonly number[], entries: readonly ScriptEntry[], classified: unknown) {
+  const ids = new Set(sourceEntryIds)
+  return derivedAudience(entries.filter(entry => ids.has(entry.id)).map(entry => entry.audience), classified)
+}
+
+/** Group chats have the public tier; their records stay with that group like a visitor's. */
+function groupAudience(groupId: string): Audience {
+  return visitorAudience(`tg-group:${groupId}`)
 }
 
 function sessionGroupId(session: Session) {

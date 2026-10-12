@@ -1,3 +1,5 @@
+import type { Audience, ClassifiedAudience } from './memory/audience'
+
 export type StoryStatus = 'active' | 'paused' | 'archived'
 
 export interface CharacterSetting {
@@ -190,6 +192,8 @@ export interface ScriptEntry {
   content: string
   occurredAt: Date
   metadata: Record<string, unknown>
+  /** Who may see this record; see memory/audience.ts. */
+  audience: Audience
   createdAt: Date
 }
 
@@ -202,6 +206,7 @@ export interface NarrativeMemory {
   importance: number
   status: string
   sourceEntryId: number | null
+  audience: Audience
   createdAt: Date
   updatedAt: Date
 }
@@ -219,6 +224,8 @@ export interface InterludeScene {
   entryCount: number
   /** 最近一次已经被写入场景摘要的条目；下一轮只压缩它之后的新内容。 */
   lastEntryId: number | null
+  /** Built from every entry, so always private; a public version is generated separately. */
+  audience: Audience
   createdAt: Date
   updatedAt: Date
 }
@@ -230,6 +237,7 @@ export interface InterludeArc {
   title: string
   summary: string
   sceneCount: number
+  audience: Audience
   createdAt: Date
   updatedAt: Date
 }
@@ -253,6 +261,7 @@ export interface StatePatchProposal {
   impact: 'minor' | 'major'
   status: StatePatchStatus
   sourceEntryIds: number[]
+  audience: Audience
   createdAt: Date
   appliedAt: Date | null
 }
@@ -273,6 +282,7 @@ export interface OverlaySnapshot {
   majorEvents: string[]
   sourcePatchIds: number[]
   status: 'active' | 'superseded'
+  audience: Audience
   createdAt: Date
   updatedAt: Date
 }
@@ -289,6 +299,7 @@ export interface NarrativeFact {
   unresolved: boolean
   status: 'active' | 'superseded'
   sourceEntryIds: number[]
+  audience: Audience
   lastSeenAt: Date
   createdAt: Date
   updatedAt: Date
@@ -338,7 +349,7 @@ export interface ScriptEntryDraft {
   metadata?: Record<string, unknown>
 }
 
-export interface MemoryDraft { category: string; content: string; importance?: number; participantId?: string }
+export interface MemoryDraft { category: string; content: string; importance?: number; participantId?: string; audience?: ClassifiedAudience }
 export interface IntentDraft { type: string; summary: string; notBefore: string; payload?: Record<string, unknown>; participantId?: string }
 /** A narrator may close an active narrative consequence once the script has
  * naturally absorbed it. Scheduled intents complete through their due-turn
@@ -426,6 +437,8 @@ export interface NarrativeDecision {
   /** Required only for an immediate background delivery; it records the newly communicated delta. */
   automaticDeliverySummary?: string
   memories?: MemoryDraft[]
+  /** Advance passages only: the model's privacy label for the script itself; otherwise the host decides. */
+  scriptAudience?: ClassifiedAudience
   intents?: IntentDraft[]
   /** Resolves existing active-consequence intents visible in this turn. */
   intentUpdates?: IntentUpdateDraft[]
@@ -561,6 +574,7 @@ export interface FactDraft {
   confidence?: number
   unresolved?: boolean
   sourceEntryIds?: number[]
+  audience?: ClassifiedAudience
 }
 
 export interface StatePatchDraft {
@@ -572,6 +586,7 @@ export interface StatePatchDraft {
   confidence?: number
   impact?: 'minor' | 'major'
   sourceEntryIds?: number[]
+  audience?: ClassifiedAudience
 }
 
 export interface ScenePresenceDraft {

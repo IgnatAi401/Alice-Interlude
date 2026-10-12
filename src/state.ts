@@ -2,6 +2,7 @@ import { normalizeAgencyWindowState } from './agency'
 import { normalizeAlterSystemState } from './alter'
 import { AutomaticDeliverySummary, ContinuitySnapshot, InterludeParticipant, InterludeStory, ParticipantState, ScenePresenceState, StorySetting, StoryState } from './types'
 import { clip, isRecord, toDate } from './util'
+import { normalizeAudience } from './memory/audience'
 
 /** Normalizes stored story and participant state, and rows read from SQLite. */
 
@@ -157,6 +158,12 @@ export const DATABASE_DATE_FIELDS: Record<string, string[]> = {
   interlude_web_observation: ['accessedAt', 'createdAt'],
 }
 
+/** Memory tables whose rows carry an audience label (roadmap §4.2). */
+export const AUDIENCE_TABLES = [
+  'interlude_script_entry', 'interlude_memory', 'interlude_fact', 'interlude_state_patch',
+  'interlude_scene', 'interlude_arc', 'interlude_overlay_snapshot',
+] as const
+
 /** Minato normally materializes timestamp columns as Date objects. Some
  * drivers and hot-reload paths can return ISO strings, so normalize every row
  * crossing the service boundary before time arithmetic or prompt building. */
@@ -167,6 +174,8 @@ export function normalizeDatabaseRow(table: string, value: unknown): any {
     if (row[field] === null || row[field] === undefined) continue
     row[field] = toDate(row[field])
   }
+  // Fail closed for rows written before audiences existed or edited by hand (S6).
+  if ((AUDIENCE_TABLES as readonly string[]).includes(table)) row.audience = normalizeAudience(row.audience)
   if (table === 'interlude_story') {
     const createdAt = toDate(row.createdAt) ?? new Date()
     const updatedAt = toDate(row.updatedAt) ?? createdAt
