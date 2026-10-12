@@ -4,6 +4,8 @@
 
 - 移除 `test/` 自动化测试与 `pnpm test`；开发检查改为 `pnpm typecheck`、`pnpm build` 和实际运行验证。
 - 文档整理到 `docs/guide/`（使用说明）和 `docs/design/`（设计说明）。
+- 新增必填环境变量 `ALICE_OWNER_CHAT_ID`（主人私聊 chat id，须在 `TELEGRAM_CHAT_IDS` 中）。
+- 管理命令只允许主人私聊执行，其他聊天的管理命令静默忽略；移除 `sharedStory.managerAccounts`。
 
 ## 0.1.3 · 独立 Telegram 版
 

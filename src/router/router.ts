@@ -1,10 +1,15 @@
 import type { AdapterInboundEvent, InboundEvent } from './events'
+import { resolveTier } from './tiers'
+
+export interface RouterOptions {
+  /** Validated ALICE_OWNER_CHAT_ID. */
+  ownerChatId: string
+}
 
 /**
  * The only place where an event receives its trust tier.
- * 阶段 0 还没有 ALICE_OWNER_CHAT_ID，因此一律按 public 处理（fail-closed）；
- * 目前没有任何代码读取 tier，阶段 1 在这里加入 owner 判定、限流与预算。
+ * 限流与 usage_ledger 预算检查以后也放在这里，在调用模型之前完成。
  */
-export function routeInbound(event: AdapterInboundEvent): InboundEvent {
-  return { ...event, tier: 'public' }
+export function routeInbound(event: AdapterInboundEvent, options: RouterOptions): InboundEvent {
+  return { ...event, tier: resolveTier(event.channel, event.sourceId, options.ownerChatId) }
 }

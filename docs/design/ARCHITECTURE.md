@@ -20,6 +20,8 @@ Telegram getUpdates 长轮询
 | `main.ts` | macOS 检查、环境和配置加载、启动与退出 |
 | `adapters/telegram-private.ts` | 原生 Bot API、长轮询、图片、白名单、投递和确认回答；把私聊 Session 转成 `InboundEvent` |
 | `router/events.ts`、`router/router.ts` | 与渠道无关的消息类型；Router 是唯一给事件定信任等级的地方 |
+| `router/tiers.ts` | 信任等级、能力表和唯一的 owner 判定 |
+| `capabilities/registry.ts` | 工具注册表：按等级暴露、执行前二次检查 |
 | `runtime.ts` | 请求取消、计时器、日志和轻量命令解析 |
 | `database.ts` | Node 内置 SQLite、JSON 记录、查询和接收位置 |
 | `config.ts` | 配置类型、JSON 默认值与校验 |

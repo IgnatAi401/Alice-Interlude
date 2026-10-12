@@ -8,6 +8,8 @@ export interface TelegramEnvironment {
   token: string
   botId: string
   chatIds: ReadonlySet<string>
+  /** ALICE_OWNER_CHAT_ID: the only private chat with the owner tier. */
+  ownerChatId: string
 }
 
 export function assertMacOS(platform: string = process.platform) {
@@ -22,7 +24,11 @@ export function readTelegramEnvironment(env: NodeJS.ProcessEnv = process.env): T
   if (ids.some(id => !/^-?[1-9]\d*$/.test(id) || BigInt(id) > BigInt(Number.MAX_SAFE_INTEGER) || BigInt(id) < -BigInt(Number.MAX_SAFE_INTEGER))) {
     throw new Error('TELEGRAM_CHAT_IDS 必须是逗号或空白分隔的整数 chat id。')
   }
-  return { token, botId: token.split(':')[0], chatIds: new Set(ids) }
+  const ownerChatId = env.ALICE_OWNER_CHAT_ID?.trim() ?? ''
+  // The owner is a private chat (positive id); a group can never be the owner.
+  if (!/^[1-9]\d*$/.test(ownerChatId)) throw new Error('请在环境变量 ALICE_OWNER_CHAT_ID 中填写主人私聊的 chat id（正整数）。')
+  if (!ids.includes(ownerChatId)) throw new Error('ALICE_OWNER_CHAT_ID 必须同时出现在 TELEGRAM_CHAT_IDS 中。')
+  return { token, botId: token.split(':')[0], chatIds: new Set(ids), ownerChatId }
 }
 
 // Forum topics have their own channelId; authorization always uses the parent chat id.

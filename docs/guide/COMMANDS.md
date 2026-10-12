@@ -1,6 +1,6 @@
 # Telegram 管理命令
 
-在获授权私聊中发送以下完整文本。Telegram 的命令菜单只支持有限命名形式，本项目直接解析 `/interlude.xxx` 文本，无须向 BotFather 注册菜单。管理权限由 `sharedStory.managerAccounts` 限制；留空时允许全部获授权私聊。失明模式关闭这些命令。
+在主人私聊（`ALICE_OWNER_CHAT_ID`）中发送以下完整文本。Telegram 的命令菜单只支持有限命名形式，本项目直接解析 `/interlude.xxx` 文本，无须向 BotFather 注册菜单。其他聊天发送的管理命令会被静默忽略。失明模式关闭这些命令。
 
 | 命令 | 用途 |
 | --- | --- |

@@ -8,6 +8,7 @@
 | --- | --- |
 | `TELEGRAM_BOT_TOKEN` | 唯一 Telegram Bot 的 token |
 | `TELEGRAM_CHAT_IDS` | 唯一访问白名单；逗号或空白分隔的完整 chat id |
+| `ALICE_OWNER_CHAT_ID` | 主人私聊的 chat id（正整数），必须在 `TELEGRAM_CHAT_IDS` 中；只有这个私聊能执行管理命令，以后也只有它能使用电脑操控工具 |
 | `ANTHROPIC_API_KEY` | 所有 Claude 请求共同使用的官方 API key |
 
 私聊 ID 为正整数，群聊 ID 为负整数。`config.json` 中的资料和群配置不授予环境白名单以外的访问权。消息接收、附件下载和发送都会检查白名单。
@@ -43,14 +44,13 @@
     "groupChats": [
       { "groupId": "-1001234567890", "label": "朋友群", "enabled": true, "responseMode": "mention-only" }
     ]
-  },
-  "sharedStory": { "managerAccounts": ["123456789"] }
+  }
 }
 ```
 
 每个 Bot 共享一个主剧本，参与者有独立的资料与关系状态。默认不把其它私聊的详细资料传给当前私聊的模型请求；后台主动联系会使用受控的关系摘要。`shareParticipantDetails` 可显式开启跨参与者详细资料。
 
-`managerAccounts` 留空时，所有获授权私聊都可执行管理命令；填写后仅允许列出的私聊。群聊不能执行管理命令。群聊 `responseMode` 可设为 `always`；默认 `mention-only`。群意愿累积可用 `willingness.enabled` 单独开启。
+管理命令只允许 `ALICE_OWNER_CHAT_ID` 对应的私聊执行，其他私聊和群聊发送的管理命令会被静默忽略。旧版的 `sharedStory.managerAccounts` 已移除，配置中保留该项会导致启动报错。群聊 `responseMode` 可设为 `always`；默认 `mention-only`。群意愿累积可用 `willingness.enabled` 单独开启。
 
 ## Claude
 

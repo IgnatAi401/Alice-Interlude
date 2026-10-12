@@ -3,11 +3,10 @@
  * these shapes so the narrative core never depends on a specific transport.
  */
 
+import type { InboundTier } from './tiers'
+
 export type InboundChannel = 'telegram-private' | 'telegram-group' | 'web'
 export type OutboundChannel = InboundChannel | 'telegram-channel'
-
-/** What a turn is allowed to do; see dev/ROADMAP.md §2. */
-export type Tier = 'owner' | 'public'
 
 /** Adapter-private way back to where an event came from. */
 export interface ReplyHandle {
@@ -19,7 +18,7 @@ export interface InboundEvent {
   /** Unique within the channel: Telegram chat id, web visitorId, etc. */
   sourceId: string
   /** Assigned only by router.ts; adapters and message content cannot set it. */
-  tier: Tier
+  tier: InboundTier
   /** Stable cross-channel key such as 'tg:123456' or 'web:v_xxx'. */
   participantKey: string
   senderId: string

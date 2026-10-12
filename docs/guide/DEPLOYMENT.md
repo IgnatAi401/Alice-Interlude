@@ -35,7 +35,7 @@ if (!chats.size) console.log('暂无消息；请先给 Bot 发一句话再执行
 JS
 ```
 
-把自己的 ID 填入 `TELEGRAM_CHAT_IDS`。群聊 ID 可通过先把 Bot 加入群并发送提及 Bot 的消息，以同样方式获取。若 Bot 已设置 webhook，需要先通过 Telegram Bot API 删除 webhook，才能使用 `getUpdates`；本项目正式启动时会自动删除 webhook。
+把自己的 ID 同时填入 `TELEGRAM_CHAT_IDS` 和 `ALICE_OWNER_CHAT_ID`。群聊 ID 可通过先把 Bot 加入群并发送提及 Bot 的消息，以同样方式获取。若 Bot 已设置 webhook，需要先通过 Telegram Bot API 删除 webhook，才能使用 `getUpdates`；本项目正式启动时会自动删除 webhook。
 
 ## 3. 填角色并运行
 

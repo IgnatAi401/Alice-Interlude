@@ -175,8 +175,6 @@ export interface SharedStoryConfig {
   maxCrossConversationActions: number
   /** Number of other relationship summaries sent to the main narrator. */
   participantContextLimit: number
-  /** Empty allows all authorized private chats to run management commands. */
-  managerAccounts: string[]
 }
 
 export interface RestWindow {
@@ -273,7 +271,7 @@ export const DEFAULT_CONFIG: Config = {
   },
   telegram: { userAccounts: [], groupChats: [] },
   sharedStory: { autoEnrollParticipants: true, allowCrossConversationMessages: true, shareParticipantDetails: false,
-    maxCrossConversationActions: 1, participantContextLimit: 6, managerAccounts: [] },
+    maxCrossConversationActions: 1, participantContextLimit: 6 },
   runtime: {
     splitReplyMessages: true, messageSeparator: '<sep/>', typingBaseDelaySeconds: 1, typingCharactersPerSecond: 8,
     typingMaxDelaySeconds: 12, userMessageDebounceSeconds: 2, narrativeRetryDelaySeconds: 60, narrativeRetryMaxAttempts: 6,
@@ -319,6 +317,10 @@ function mergeDefaults(defaults: any, input: any, path = 'config'): any {
 export function resolveConfig(input: unknown): Config {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('config 必须是对象。')
   const { memory, ...rest } = input as Record<string, unknown>
+  const shared = rest.sharedStory as Record<string, unknown> | undefined
+  if (shared && typeof shared === 'object' && Object.hasOwn(shared, 'managerAccounts')) {
+    throw new Error('sharedStory.managerAccounts 已移除：管理命令只允许 ALICE_OWNER_CHAT_ID 对应的私聊，请删除该项。')
+  }
   const config: Config = mergeDefaults(DEFAULT_CONFIG, rest)
   if (memory !== undefined) {
     config.memory = mergeDefaults({ ...DEFAULT_MEMORY_CONFIG,

@@ -54,11 +54,13 @@ export async function start() {
       const isCommand = /^[!/.]?interlude(?:[.\s]|$)/i.test(session.content.trim())
       if (isCommand && config.blindMode?.enabled) return
       if (isCommand && config.runtime.ignoreCommandMessages) {
+        // Management commands are owner-only; other chats get no reply so the command set is not revealed.
+        if (!service.canManageSession(session)) return
         // Confirmation prompts must leave polling free to receive the answer.
         void runtime.dispatchCommand(session)?.catch(() => console.warn('管理命令执行失败。'))
         return
       }
-      if (session.isDirect) { if (config.runtime.captureDirectMessages) await service.receive(routeInbound(telegramPrivateEvent(session))) }
+      if (session.isDirect) { if (config.runtime.captureDirectMessages) await service.receive(routeInbound(telegramPrivateEvent(session), { ownerChatId: env.ownerChatId })) }
       else await service.receiveGroup(session)
     })
   } finally {

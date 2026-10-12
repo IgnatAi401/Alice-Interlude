@@ -11,6 +11,7 @@ import { AutoAdvanceConfig, activeRestWindow, automaticIntervalMinutes, groupDue
 import { isTransientDatabaseError, mergeParticipantState, mergeSetting, narrativeCursor, normalizeDatabaseRow, normalizeParticipantState, normalizeStoryState, participantRelevance } from './state'
 import { TelegramEnvironment, isAllowedTelegramSession, readTelegramEnvironment, telegramChatId } from './adapters/telegram-private'
 import type { InboundEvent, ReplyHandle } from './router/events'
+import { resolveTier } from './router/tiers'
 import { formatLogTime } from './time'
 import { AgencyConfig, AgencyWindowState, AlterSystemConfig, AlterSystemState, AutomaticDeliverySummary, CompactionDecision, EmotionalOffsetPrompt, FollowUpCommitmentDraft, FollowUpResolutionDraft, GroupContext, GroupMessageContext, IntentDraft, InterludeArc, InterludeParticipant, InterludeScene, InterludeStory, MemoryDraft, NarrativeCompactor, NarrativeDecision, NarrativeFact, NarrativeImage, NarrativeIntent, NarrativeInteraction, NarrativeProvider, NarrativeRequest, OutgoingMessageDraft, OverlaySnapshot, ParticipantState, ProactiveContactDraft, ScriptEntry, ScriptEntryDraft, StatePatchDraft, StatePatchProposal, StorySetting, StoryState, WebObservation, emptyParticipantState, emptyStorySetting, emptyStoryState } from './types'
 import { clampNumber, clip, isRecord, normalizeFact, sameTimestamp, toDate } from './util'
@@ -184,12 +185,10 @@ export class InterludeService {
       && this.telegramEnvironment.chatIds.has(participant.channelId)
   }
 
-  canManageSession(session: Session): boolean {
-    if (!this.canHandleSession(session)) {
-      return false
-    }
-    const managers = this.sharedStoryConfig.managerAccounts.map(value => String(value ?? '').trim()).filter(Boolean)
-    return !managers.length || managers.includes(telegramChatId(session))
+  /** Management commands are owner-only (roadmap S12); the tier rule lives in router/tiers.ts. */
+  canManageSession(session: ChatIdentity): boolean {
+    return this.canHandleSession(session)
+      && resolveTier('telegram-private', telegramChatId(session), this.telegramEnvironment.ownerChatId) === 'owner'
   }
 
   /** Background life updates only require the bot account to remain enabled. */
@@ -2671,7 +2670,6 @@ export class InterludeService {
       shareParticipantDetails: false,
       maxCrossConversationActions: 1,
       participantContextLimit: 6,
-      managerAccounts: [],
       ...(this.config.sharedStory ?? {}),
     }
   }

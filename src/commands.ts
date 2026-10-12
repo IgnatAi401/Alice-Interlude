@@ -8,7 +8,7 @@ export function registerCommands(ctx: Runtime, service: InterludeService) {
   ctx.command('interlude', 'HDS Interlude：私聊故事测试与管理命令')
 
   const startStoryFromConfig = async (session: Session) => {
-    if (!requireManager(service, session)) return '无权限：手动启动共享主剧本需要 HDSI 管理员权限。'
+    if (!requireManager(service, session)) return '无权限：手动启动共享主剧本只允许主人私聊。'
     const readiness = await service.storyStartReadiness(session)
     if (readiness.existing) return `当前已有 ${readiness.existing.setting.character.name} 的活动主剧本；请使用 interlude.status 查看状态。`
     if (!readiness.ready) return formatStoryStartReadiness(readiness, 'config.json 档案尚未适合启动')
@@ -39,7 +39,7 @@ export function registerCommands(ctx: Runtime, service: InterludeService) {
 
   ctx.command('interlude.setup <json:text>', '高级：用 JSON 单独修改当前故事设定；普通测试请优先在 config.json 填 storyDefaults')
     .action(async ({ session = missingSession() }, json) => {
-      if (!requireManager(service, session)) return '当前 Telegram 聊天没有管理权限。请在 config.json 的 sharedStory.managerAccounts 中添加此 chat id，或留空允许所有获授权私聊。'
+      if (!requireManager(service, session)) return '当前 Telegram 聊天没有管理权限：管理命令只允许 ALICE_OWNER_CHAT_ID 对应的主人私聊。'
       const story = await requireStory(service, session)
       if (typeof story === 'string') return story
       try {
@@ -224,7 +224,7 @@ export function registerCommands(ctx: Runtime, service: InterludeService) {
 
   ctx.command('interlude.overlay.clear <target:string>', '管理员：只清理指定部分的设定演化 overlay，不删除剧本和记忆；执行前会询问 y/n')
     .action(async ({ session = missingSession() }, target) => {
-      if (!requireManager(service, session)) return '无权限：当前账号不是 HDSI 管理员。'
+      if (!requireManager(service, session)) return '无权限：当前账号不是主人。'
       const normalized = String(target || '').trim().toLowerCase() as 'character' | 'perspective' | 'relationship' | 'world' | 'all'
       if (!['character', 'perspective', 'relationship', 'world', 'all'].includes(normalized)) return 'target 必须是 character、perspective、relationship、world 或 all。'
       if (!await askConfirmation(session, `即将清理 ${normalized} overlay；剧本和记忆不会删除。确认执行吗？(y/n)`)) return '操作已取消。'
@@ -237,7 +237,7 @@ export function registerCommands(ctx: Runtime, service: InterludeService) {
 
   ctx.command('interlude.overlay.status', '管理员：查看当前 overlay、待积累提案和压缩归档状态')
     .action(async ({ session = missingSession() }) => {
-      if (!requireManager(service, session)) return '无权限：当前账号不是 HDSI 管理员。'
+      if (!requireManager(service, session)) return '无权限：当前账号不是主人。'
       const story = await requireStory(service, session)
       if (typeof story === 'string') return story
       const status = await service.adminOverlayStatus(story.id)
@@ -254,7 +254,7 @@ export function registerCommands(ctx: Runtime, service: InterludeService) {
 
   ctx.command('interlude.overlay.compact', '管理员：只合并和压缩已应用的 overlay，不整理普通剧本记忆')
     .action(async ({ session = missingSession() }) => {
-      if (!requireManager(service, session)) return '无权限：当前账号不是 HDSI 管理员。'
+      if (!requireManager(service, session)) return '无权限：当前账号不是主人。'
       const story = await requireStory(service, session)
       if (typeof story === 'string') return story
       const changed = await service.compactOverlay(story)
@@ -263,7 +263,7 @@ export function registerCommands(ctx: Runtime, service: InterludeService) {
 
   ctx.command('interlude.database.clear', '管理员：清空本地叙事数据库；执行前会询问 y/n')
     .action(async ({ session = missingSession() }) => {
-      if (!requireManager(service, session)) return '无权限：当前账号不是 HDSI 管理员。'
+      if (!requireManager(service, session)) return '无权限：当前账号不是主人。'
       if (!await askConfirmation(session, '即将清空 HDSI 自有数据库，剧本、记忆和状态记录都会删除。确认执行吗？(y/n)')) return '操作已取消。'
       const result = await service.clearDatabase()
       return `HDSI 数据库清空完成：处理 ${result.removed} 条记录${result.logicallyCleared ? `，其中 ${result.logicallyCleared} 条因 SQLite 锁定改为逻辑清空` : ''}。`
