@@ -1,0 +1,18 @@
+{
+  "storyDefaults": {
+    "characterName": "Alice",
+    "characterProfile": "请在这里填写角色背景、性格、日常生活和说话方式。",
+    "world": "当代现实生活。",
+    "location": "新加坡",
+    "timezone": "Asia/Singapore",
+    "userProfile": "",
+    "relationship": ""
+  },
+  "model": {
+    "model": "claude-sonnet-4-6",
+    "mainMaxTokens": 4096,
+    "vision": { "enabled": true }
+  },
+  "runtime": { "autoCreate": true, "allowProactiveMessages": false },
+  "telegram": { "userAccounts": [], "groupChats": [] }
+}
