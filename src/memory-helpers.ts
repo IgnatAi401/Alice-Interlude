@@ -27,17 +27,22 @@ export function limitEntriesByCharacters(entries: ScriptEntry[], limit: number) 
   return selected
 }
 
-export function factScore(fact: NarrativeFact, config: MemoryConfig, query = '') {
+/** ftsRelevance (0–1, from normalized bm25) replaces the word-overlap fallback when full-text search ran. */
+export function factScore(fact: NarrativeFact, config: MemoryConfig, query = '', ftsRelevance?: number) {
   const ageDays = Math.max(0, (Date.now() - fact.lastSeenAt.getTime()) / (24 * Time.hour))
   const recency = Math.exp(-ageDays / 30)
-  const terms = Array.from(new Set(query.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(term => term.length > 1))).slice(0, 100)
-  const content = fact.content.toLowerCase()
-  const relevance = terms.length ? terms.filter(term => content.includes(term)).length / terms.length : 0
+  const relevance = ftsRelevance ?? wordOverlapRelevance(fact.content, query)
   return fact.importance * config.factImportanceWeight
     + fact.confidence * config.factConfidenceWeight
     + recency * config.factRecencyWeight
     + relevance * 0.55
     + (fact.unresolved ? 1 : 0) * config.unresolvedWeight
+}
+
+function wordOverlapRelevance(text: string, query: string) {
+  const terms = Array.from(new Set(query.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(term => term.length > 1))).slice(0, 100)
+  const content = text.toLowerCase()
+  return terms.length ? terms.filter(term => content.includes(term)).length / terms.length : 0
 }
 
 export function createFactQuery(participant: InterludeParticipant | null, userMessage: string | undefined, dueIntents: NarrativeIntent[], supersededIntents: NarrativeIntent[]) {

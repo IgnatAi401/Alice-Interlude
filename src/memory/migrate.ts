@@ -18,4 +18,11 @@ export function runMigrations(storage: Storage, log: (message: string) => void =
     storage.setMeta(SCHEMA_VERSION_KEY, '1')
     log(`数据迁移完成：schema_version=1，已有 ${changed} 条记忆记录标记为 private。`)
   }
+  if (current < 2) {
+    // v2: index rows written before the full-text triggers existed.
+    storage.rebuildFts('fact')
+    storage.rebuildFts('entry')
+    storage.setMeta(SCHEMA_VERSION_KEY, '2')
+    log('数据迁移完成：schema_version=2，已建立事实与剧本的全文索引。')
+  }
 }

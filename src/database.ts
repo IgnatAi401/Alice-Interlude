@@ -8,6 +8,10 @@ const TABLES: Record<string, boolean> = {
 }
 
 type Row = Record<string, any>
+
+/** Full-text indexes kept in sync with a JSON table's content field by triggers (roadmap §4.5). */
+const FTS_INDEXES = { fact: 'interlude_fact', entry: 'interlude_script_entry' } as const
+export type FtsIndex = keyof typeof FTS_INDEXES
 interface QueryOptions { limit?: number; offset?: number; sort?: Record<string, 'asc' | 'desc'> }
 
 /** Native SQLite storage; each record preserves the existing narrative data shape. */
@@ -23,6 +27,16 @@ export class Storage {
       }
     }
     this.db.exec('CREATE TABLE IF NOT EXISTS runtime_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
+    for (const [index, table] of Object.entries(FTS_INDEXES)) {
+      const fts = `${index}_fts`, content = "json_extract(new.data, '$.content')"
+      this.db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS ${fts} USING fts5(content, tokenize='trigram')`)
+      this.db.exec(`CREATE TRIGGER IF NOT EXISTS ${index}_fts_ai AFTER INSERT ON ${table} BEGIN
+        INSERT INTO ${fts}(rowid, content) VALUES (new.id, ${content}); END`)
+      this.db.exec(`CREATE TRIGGER IF NOT EXISTS ${index}_fts_au AFTER UPDATE ON ${table} BEGIN
+        UPDATE ${fts} SET content = ${content} WHERE rowid = new.id; END`)
+      this.db.exec(`CREATE TRIGGER IF NOT EXISTS ${index}_fts_ad AFTER DELETE ON ${table} BEGIN
+        DELETE FROM ${fts} WHERE rowid = old.id; END`)
+    }
   }
 
   private table(name: string) {
@@ -106,6 +120,28 @@ export class Storage {
     const column = this.field(field)
     const result = this.db.prepare(`UPDATE ${this.table(table)} SET data = json_set(data, '$.${field}', ?) WHERE ${column} IS NULL`).run(value)
     return Number(result.changes)
+  }
+
+  /**
+   * Row ids ranked by bm25 (lower rank is better). Results span every story
+   * and audience: callers must re-read the rows through memory/store.ts,
+   * which applies the audience filter.
+   */
+  ftsSearch(index: FtsIndex, match: string, limit: number): Array<{ id: number; rank: number }> {
+    if (!Object.hasOwn(FTS_INDEXES, index)) throw new Error('Unknown full-text index.')
+    return this.db.prepare(`SELECT rowid AS id, bm25(${index}_fts) AS rank FROM ${index}_fts WHERE ${index}_fts MATCH ? ORDER BY rank LIMIT ?`)
+      .all(match, Math.max(1, Math.floor(limit))).map(row => ({ id: Number(row.id), rank: Number(row.rank) }))
+  }
+
+  /** Rebuilds a full-text index from its table; used by migrations for rows written before the triggers existed. */
+  rebuildFts(index: FtsIndex) {
+    const table = FTS_INDEXES[index]
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      this.db.exec(`DELETE FROM ${index}_fts`)
+      this.db.exec(`INSERT INTO ${index}_fts(rowid, content) SELECT id, json_extract(data, '$.content') FROM ${table}`)
+      this.db.exec('COMMIT')
+    } catch (error) { this.db.exec('ROLLBACK'); throw error }
   }
 
   getMeta(key: string) { return this.db.prepare('SELECT value FROM runtime_meta WHERE key = ?').get(key)?.value as string | undefined }

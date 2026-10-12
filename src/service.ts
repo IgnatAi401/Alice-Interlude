@@ -4,7 +4,7 @@ import { BlindModeConfig, Config, DEFAULT_MEMORY_CONFIG, GroupChatRule, MemoryCo
 import { automaticDeliveryFromPayload, consequenceExpiresAt, consequenceStrength, followUpExpiresAt, hasCompactionEvidence, hasRequiredNarrativeScript, inferredFollowUpCommitment, interactionPromisesFollowUp, isActiveConsequence, isActiveConsequenceDraft, isAutomaticNarrativePhase, mergeDeliverySummary, normalizeDecision, normalizeFollowUpSummary, normalizeGroupVisibleReply, normalizeIntentUpdates, normalizeInteraction, normalizeScenePresenceDrafts, requiresVisibleReplyRecovery, visibleReplyMode } from './decision'
 import { GroupWillingnessState, consumeGroupWillingness, evaluateGroupWillingness } from './group-willingness'
 import { formatLayeredLog, phaseLabel, renderLogMessage } from './logging'
-import { createFactQuery, factScore, groupOverlayPatches, groupOverlaySnapshots, limitEntriesByCharacters, mergeNote, normalizeMajorEvents, patchClaimsMatch, resolveParticipantId, statePatchEvidence } from './memory-helpers'
+import { createFactQuery, groupOverlayPatches, groupOverlaySnapshots, limitEntriesByCharacters, mergeNote, normalizeMajorEvents, patchClaimsMatch, resolveParticipantId, statePatchEvidence } from './memory-helpers'
 import { createCompactor, createNarrator, hasAnthropicCredentials } from './narrator'
 import { Logger, Runtime, MessageSession as Session, Time } from './runtime'
 import { AutoAdvanceConfig, activeRestWindow, automaticIntervalMinutes, groupDueIntents, normalizeFollowUpMinutes, scheduleConversationFollowUps } from './schedule'
@@ -12,7 +12,8 @@ import { AUDIENCE_TABLES, isTransientDatabaseError, mergeParticipantState, merge
 import { TelegramEnvironment, isAllowedTelegramSession, readTelegramEnvironment, telegramChatId } from './adapters/telegram-private'
 import type { InboundEvent, ReplyHandle } from './router/events'
 import { resolveTier } from './router/tiers'
-import { Audience, derivedAudience, normalizeAudience, visitorAudience } from './memory/audience'
+import { Audience, Viewer, derivedAudience, normalizeAudience, visitorAudience } from './memory/audience'
+import { MemoryStore, OWNER_VIEWER } from './memory/store'
 import { formatLogTime } from './time'
 import { AgencyConfig, AgencyWindowState, AlterSystemConfig, AlterSystemState, AutomaticDeliverySummary, CompactionDecision, EmotionalOffsetPrompt, FactDraft, FollowUpCommitmentDraft, FollowUpResolutionDraft, GroupContext, GroupMessageContext, IntentDraft, InterludeArc, InterludeParticipant, InterludeScene, InterludeStory, MemoryDraft, NarrativeCompactor, NarrativeDecision, NarrativeFact, NarrativeImage, NarrativeIntent, NarrativeInteraction, NarrativeProvider, NarrativeRequest, OutgoingMessageDraft, OverlaySnapshot, ParticipantState, ProactiveContactDraft, ScriptEntry, ScriptEntryDraft, StatePatchDraft, StatePatchProposal, StorySetting, StoryState, WebObservation, emptyParticipantState, emptyStorySetting, emptyStoryState } from './types'
 import { clampNumber, clip, isRecord, normalizeFact, sameTimestamp, toDate } from './util'
@@ -104,6 +105,8 @@ export class InterludeService {
   /** SQLite has one writable connection; serialize writes globally. */
   private databaseWriteQueue: Promise<unknown> = Promise.resolve()
   private readonly web: WebObserver
+  /** The only read path for memory tables; every read names its viewer. */
+  private readonly store: MemoryStore
   /** Local terminal logger. */
   private readonly serviceLogger: Logger
   private backgroundStarted = false
@@ -115,6 +118,10 @@ export class InterludeService {
   constructor(public ctx: Runtime, public config: Config,
     private readonly telegramEnvironment: TelegramEnvironment = readTelegramEnvironment()) {
     this.serviceLogger = ctx.logger('hds-interlude')
+    this.store = new MemoryStore({
+      get: (table, query, options) => this.dbGet(table, query, options),
+      ftsSearch: (index, match, limit) => this.dbRead(async () => this.ctx.database.ftsSearch(index, match, limit)),
+    }, () => this.memoryConfig)
     this.web = new WebObserver({
       browserConfig: () => this.config.browser,
       shareParticipantDetails: () => this.sharedStoryConfig.shareParticipantDetails,
@@ -205,6 +212,17 @@ export class InterludeService {
   private sourceAudience(participant?: InterludeParticipant | null): Audience {
     // participantKey matches telegramPrivateEvent: 'tg:<userId>'.
     return !participant || this.isOwnerParticipant(participant) ? 'private' : visitorAudience(`tg:${participant.userId}`)
+  }
+
+  /**
+   * Who reads memory in a narrative turn (roadmap §2.1, §7). The owner chat
+   * and participant-free background turns see everything; any other chat or
+   * group sees public records plus its own.
+   */
+  private turnViewer(participant: InterludeParticipant | null, groupContext?: GroupContext): Viewer {
+    if (groupContext) return { tier: 'public', participantKey: groupParticipantKey(groupContext.groupId) }
+    if (!participant || this.isOwnerParticipant(participant)) return OWNER_VIEWER
+    return { tier: 'public', participantKey: `tg:${participant.userId}` }
   }
 
   private async sourceAudienceForId(participantId: string) {
@@ -397,30 +415,19 @@ export class InterludeService {
     return { ...story, status, updatedAt: now }
   }
 
+  // The helpers below are owner views: management commands and background
+  // maintenance. Narrative turns call this.store with their own viewer.
   async recentEntries(storyId: string, limit = this.config.runtime.contextEntryLimit) {
-    const bounded = Math.max(1, Math.min(limit, 200))
-    const rows = await this.dbGet('interlude_script_entry', { storyId }, {
-      limit: bounded,
-      sort: { occurredAt: 'desc' },
-    })
-    return rows.reverse()
+    return this.store.recentEntries(OWNER_VIEWER, storyId, limit)
   }
 
   async memories(storyId: string, limit = this.config.runtime.memoryLimit, participantId?: string) {
-    const bounded = Math.max(1, Math.min(limit * 4, 500))
-    const rows = await this.dbGet('interlude_memory', { storyId, status: 'active' }, {
-      limit: bounded,
-      sort: { importance: 'desc', updatedAt: 'desc' },
-    })
-    return rows
-      .filter(memory => participantId === undefined || !memory.participantId || memory.participantId === participantId)
-      .sort((a, b) => b.importance - a.importance || b.updatedAt.getTime() - a.updatedAt.getTime())
-      .slice(0, limit)
+    return this.store.memories(OWNER_VIEWER, storyId, limit, participantId)
   }
 
   /** Administrative view: includes global and participant-specific durable facts. */
   async adminFacts(storyId: string, limit = 20) {
-    return this.dbGet('interlude_fact', { storyId, status: 'active' }, {
+    return this.store.rows(OWNER_VIEWER, 'interlude_fact', { storyId, status: 'active' }, {
       limit: Math.max(1, Math.min(limit, 100)),
       sort: { updatedAt: 'desc' },
     })
@@ -434,7 +441,7 @@ export class InterludeService {
   }
 
   async adminStatePatches(storyId: string, limit = 20) {
-    return this.dbGet('interlude_state_patch', { storyId }, {
+    return this.store.rows(OWNER_VIEWER, 'interlude_state_patch', { storyId }, {
       limit: Math.max(1, Math.min(limit, 100)),
       sort: { createdAt: 'desc' },
     })
@@ -468,7 +475,7 @@ export class InterludeService {
 
   /** Reversible deletion: facts are retained as superseded rows for audit. */
   async forgetAdminFact(storyId: string, id: number) {
-    const fact = (await this.dbGet('interlude_fact', { id, storyId, status: 'active' }))[0]
+    const fact = (await this.store.rows(OWNER_VIEWER, 'interlude_fact', { id, storyId, status: 'active' }))[0]
     if (!fact) return false
     await this.dbSet('interlude_fact', { id }, { status: 'superseded', updatedAt: new Date() })
     return true
@@ -482,7 +489,7 @@ export class InterludeService {
   }
 
   async rejectAdminStatePatch(storyId: string, id: number) {
-    const patch = (await this.dbGet('interlude_state_patch', { id, storyId, status: 'proposed' }))[0]
+    const patch = (await this.store.rows(OWNER_VIEWER, 'interlude_state_patch', { id, storyId, status: 'proposed' }))[0]
     if (!patch) return false
     await this.dbSet('interlude_state_patch', { id }, { status: 'rejected' })
     return true
@@ -524,12 +531,12 @@ export class InterludeService {
     // Preserve proposals for audit, but invalidate both active overlay rows and
     // pending candidates. Otherwise a candidate created before the clear could
     // be applied later and silently resurrect the old personality/relationship.
-    const patches = await this.dbGet('interlude_state_patch', { storyId: story.id })
+    const patches = await this.store.rows(OWNER_VIEWER, 'interlude_state_patch', { storyId: story.id })
     for (const patch of patches) {
       if (!['proposed', 'applied', 'compacted'].includes(patch.status) || (target !== 'all' && patch.target !== target)) continue
       await this.dbSet('interlude_state_patch', { id: patch.id }, { status: 'cleared' })
     }
-    const snapshots = await this.dbGet('interlude_overlay_snapshot', { storyId: story.id, status: 'active' }) as OverlaySnapshot[]
+    const snapshots = await this.store.rows(OWNER_VIEWER, 'interlude_overlay_snapshot', { storyId: story.id, status: 'active' }) as OverlaySnapshot[]
     for (const snapshot of snapshots) {
       if (target !== 'all' && snapshot.target !== target) continue
       await this.dbSet('interlude_overlay_snapshot', { id: snapshot.id }, { status: 'superseded', updatedAt: now })
@@ -639,20 +646,20 @@ export class InterludeService {
   async purgeStoryRange(storyId: string, from: Date, to: Date) {
     this.invalidateBufferedNarratives(storyId)
     const inRange = (value: Date | null | undefined) => !!value && value >= from && value <= to
-    const entries = await this.dbGet('interlude_script_entry', { storyId })
+    const entries = await this.store.rows(OWNER_VIEWER, 'interlude_script_entry', { storyId })
     const entryIds = new Set(entries.filter(entry => inRange(entry.occurredAt)).map(entry => entry.id))
     for (const entry of entries) if (entryIds.has(entry.id)) await this.purgeTable('interlude_script_entry', { id: entry.id }, {
       kind: 'redacted', actor: 'system', content: '[管理员已删除剧本内容]', metadata: { redacted: true },
     })
 
-    const memories = await this.dbGet('interlude_memory', { storyId })
+    const memories = await this.store.rows(OWNER_VIEWER, 'interlude_memory', { storyId })
     for (const memory of memories) {
       if (inRange(memory.createdAt) || (memory.sourceEntryId != null && entryIds.has(memory.sourceEntryId))) {
         await this.purgeTable('interlude_memory', { id: memory.id }, { status: 'deleted', content: '[管理员已删除记忆]' })
       }
     }
 
-    const facts = await this.dbGet('interlude_fact', { storyId })
+    const facts = await this.store.rows(OWNER_VIEWER, 'interlude_fact', { storyId })
     for (const fact of facts) {
       const sourced = (fact.sourceEntryIds ?? []).some((id: number) => entryIds.has(id))
       if (inRange(fact.createdAt) || inRange(fact.updatedAt) || inRange(fact.lastSeenAt) || sourced) {
@@ -667,15 +674,15 @@ export class InterludeService {
       }
     }
 
-    const scenes = await this.dbGet('interlude_scene', { storyId })
+    const scenes = await this.store.rows(OWNER_VIEWER, 'interlude_scene', { storyId })
     for (const scene of scenes) {
       const overlaps = scene.startedAt <= to && (!scene.endedAt || scene.endedAt >= from)
       if (overlaps) await this.purgeTable('interlude_scene', { id: scene.id }, { status: 'closed', hook: '', summary: '', entryCount: 0 })
     }
-    const arcs = await this.dbGet('interlude_arc', { storyId })
+    const arcs = await this.store.rows(OWNER_VIEWER, 'interlude_arc', { storyId })
     for (const arc of arcs) if (inRange(arc.createdAt) || inRange(arc.updatedAt)) await this.purgeTable('interlude_arc', { id: arc.id }, { status: 'closed', summary: '', sceneCount: 0 })
 
-    const patches = await this.dbGet('interlude_state_patch', { storyId })
+    const patches = await this.store.rows(OWNER_VIEWER, 'interlude_state_patch', { storyId })
     for (const patch of patches) if (inRange(patch.createdAt) || inRange(patch.appliedAt)) await this.purgeTable('interlude_state_patch', { id: patch.id }, { status: 'rejected', proposedValue: '[管理员已删除提案]', evidence: '' })
 
     const observations = await this.dbGet('interlude_web_observation', { storyId })
@@ -909,7 +916,7 @@ export class InterludeService {
     }
   }
   private async groupMessages(storyId: string, groupId: string, limit: number) {
-    const rows = await this.dbGet('interlude_script_entry', { storyId }, {
+    const rows = await this.store.rows({ tier: 'public', participantKey: groupParticipantKey(groupId) }, 'interlude_script_entry', { storyId }, {
       limit: Math.max(20, Math.min(200, limit * 8)), sort: { occurredAt: 'desc' },
     })
     return rows
@@ -926,7 +933,7 @@ export class InterludeService {
 
   private async groupCooldownActive(storyId: string, groupId: string, cooldownSeconds: number) {
     if (cooldownSeconds <= 0) return false
-    const rows = await this.dbGet('interlude_script_entry', { storyId, kind: 'character-group-message' }, {
+    const rows = await this.store.rows(OWNER_VIEWER, 'interlude_script_entry', { storyId, kind: 'character-group-message' }, {
       limit: 50, sort: { occurredAt: 'desc' },
     })
     const latest = rows.find(entry => normalizeGroupId(String(entry.metadata?.groupId ?? '')) === normalizeGroupId(groupId))
@@ -1243,8 +1250,8 @@ export class InterludeService {
   async adminOverlayStatus(storyId: string) {
     const [story, patches, snapshots, participants] = await Promise.all([
       this.getStory(storyId),
-      this.dbGet('interlude_state_patch', { storyId }, { sort: { createdAt: 'desc' } }) as Promise<StatePatchProposal[]>,
-      this.dbGet('interlude_overlay_snapshot', { storyId, status: 'active' }, { sort: { periodEnd: 'desc' } }) as Promise<OverlaySnapshot[]>,
+      this.store.rows(OWNER_VIEWER, 'interlude_state_patch', { storyId }, { sort: { createdAt: 'desc' } }) as Promise<StatePatchProposal[]>,
+      this.store.rows(OWNER_VIEWER, 'interlude_overlay_snapshot', { storyId, status: 'active' }, { sort: { periodEnd: 'desc' } }) as Promise<OverlaySnapshot[]>,
       this.participants(storyId, true),
     ])
     return {
@@ -1467,14 +1474,15 @@ export class InterludeService {
     // database operation rather than a separate model request.
     await this.expireActiveConsequences(story.id, now)
     const factQuery = createFactQuery(participant, userMessage, dueIntents, supersededIntents)
+    const viewer = this.turnViewer(participant, groupContext)
     const [recentEntries, memories, scene, arc, facts, allParticipants, webContext, activeConsequences, overlaySnapshots, followUpCommitments] = await Promise.all([
       // Use the runtime limits on the live path.  They are the options shown
       // to testers as “上下文条目/长期事实”，and should be authoritative.
-      this.recentEntries(story.id, this.config.runtime.contextEntryLimit),
-      this.memories(story.id, this.config.runtime.memoryLimit, participant?.id),
-      this.activeScene(story.id),
-      this.activeArc(story.id),
-      this.facts(story.id, this.config.runtime.memoryLimit, factQuery, participant?.id),
+      this.store.recentEntries(viewer, story.id, this.config.runtime.contextEntryLimit),
+      this.store.memories(viewer, story.id, this.config.runtime.memoryLimit, participant?.id),
+      this.store.activeScene(viewer, story.id),
+      this.store.activeArc(viewer, story.id),
+      this.store.facts(viewer, story.id, this.config.runtime.memoryLimit, factQuery, participant?.id),
       this.participants(story.id),
       this.web.observations(story.id, participant?.id),
       this.activeConsequences(
@@ -1482,7 +1490,7 @@ export class InterludeService {
         now,
         phase === 'advance' || this.sharedStoryConfig.shareParticipantDetails ? undefined : participant?.id,
       ),
-      this.overlaySnapshotsForPrompt(story.id, participant?.id, phase === 'advance'),
+      this.overlaySnapshotsForPrompt(viewer, story.id, participant?.id, phase === 'advance'),
       participant && (phase === 'user-message' || phase === 'intent-due')
         ? this.pendingFollowUpCommitments(story.id, participant.id)
         : Promise.resolve([] as NarrativeIntent[]),
@@ -1995,41 +2003,17 @@ export class InterludeService {
     })
   }
 
-  /** Retrieve persistent facts using local quality and text relevance scores. */
+  /** Owner view of persistent facts; see MemoryStore.facts. */
   async facts(storyId: string, limit = this.memoryConfig.factLimit, query = '', participantId?: string) {
-    // The previous floor of 50 caused every live turn to scan a large slice of
-    // the facts table, even when the narrator only needed a handful of facts.
-    // Keep enough candidates for semantic re-ranking without making the
-    // latency-sensitive path do unnecessary database work.
-    const candidateLimit = Math.max(20, Math.min(limit * 5, this.memoryConfig.maxFactsPerStory, 300))
-    const rows = await this.dbGet('interlude_fact', { storyId, status: 'active' }, {
-      limit: candidateLimit,
-      sort: { importance: 'desc', updatedAt: 'desc' },
-    })
-    return rows
-      .filter(fact => participantId === undefined || !fact.participantId || fact.participantId === participantId)
-      .map(fact => ({ fact, score: factScore(fact, this.memoryConfig, query) }))
-      .sort((a, b) => b.score - a.score
-        || b.fact.updatedAt.getTime() - a.fact.updatedAt.getTime()
-        || b.fact.id - a.fact.id)
-      .slice(0, limit)
-      .map(item => item.fact)
+    return this.store.facts(OWNER_VIEWER, storyId, limit, query, participantId)
   }
 
   async activeScene(storyId: string): Promise<InterludeScene | null> {
-    const rows = await this.dbGet('interlude_scene', { storyId, status: 'active' }, {
-      limit: 1,
-      sort: { updatedAt: 'desc' },
-    })
-    return rows[0] ?? null
+    return this.store.activeScene(OWNER_VIEWER, storyId)
   }
 
   async activeArc(storyId: string): Promise<InterludeArc | null> {
-    const rows = await this.dbGet('interlude_arc', { storyId, status: 'active' }, {
-      limit: 1,
-      sort: { updatedAt: 'desc' },
-    })
-    return rows[0] ?? null
+    return this.store.activeArc(OWNER_VIEWER, storyId)
   }
 
   private async appendIntent(storyId: string, intent: IntentDraft, now: Date, participantId = '') {
@@ -2866,7 +2850,7 @@ export class InterludeService {
     // lastEntryId 将场景摘要变成增量检查点：已经压缩过的原文不再重复传给模型。
     const entryFilter: any = { storyId: story.id, occurredAt: { $gte: scene.startedAt } }
     if (scene.lastEntryId != null) entryFilter.id = { $gt: scene.lastEntryId }
-    const entries = await this.dbGet('interlude_script_entry', entryFilter, {
+    const entries = await this.store.rows(OWNER_VIEWER, 'interlude_script_entry', entryFilter, {
       limit: Math.max(this.memoryConfig.compactionEntryLimit * 2, this.memoryConfig.compactionEntryLimit),
       sort: { occurredAt: 'asc' },
     })
@@ -2914,11 +2898,11 @@ export class InterludeService {
     try {
     const recentCutoff = new Date(now.getTime() - (config.overlayRecentDays ?? 2) * Time.day)
     const monthlyCutoff = new Date(now.getTime() - (config.overlayMonthlyAfterDays ?? 10) * Time.day)
-    const applied = await this.dbGet('interlude_state_patch', { storyId: story.id, status: 'applied' }, { sort: { appliedAt: 'asc' } }) as StatePatchProposal[]
+    const applied = await this.store.rows(OWNER_VIEWER, 'interlude_state_patch', { storyId: story.id, status: 'applied' }, { sort: { appliedAt: 'asc' } }) as StatePatchProposal[]
     const weekly = applied.filter(patch => (patch.appliedAt ?? patch.createdAt) <= recentCutoff)
     let changed = false
     for (const group of groupOverlayPatches(weekly, config.overlayWeeklyWindowDays ?? 5)) {
-      const existing = (await this.dbGet('interlude_overlay_snapshot', {
+      const existing = (await this.store.rows(OWNER_VIEWER, 'interlude_overlay_snapshot', {
         storyId: story.id, participantId: group.participantId, target: group.target, tier: 'weekly', periodStart: group.from,
       }))[0] as OverlaySnapshot | undefined
       if (existing) continue
@@ -2934,9 +2918,9 @@ export class InterludeService {
       changed = true
     }
 
-    const snapshots = await this.dbGet('interlude_overlay_snapshot', { storyId: story.id, tier: 'weekly', status: 'active' }, { sort: { periodEnd: 'asc' } }) as OverlaySnapshot[]
+    const snapshots = await this.store.rows(OWNER_VIEWER, 'interlude_overlay_snapshot', { storyId: story.id, tier: 'weekly', status: 'active' }, { sort: { periodEnd: 'asc' } }) as OverlaySnapshot[]
     for (const group of groupOverlaySnapshots(snapshots.filter(snapshot => snapshot.periodEnd <= monthlyCutoff), config.overlayMonthlyWindowDays ?? 10)) {
-      const existing = (await this.dbGet('interlude_overlay_snapshot', {
+      const existing = (await this.store.rows(OWNER_VIEWER, 'interlude_overlay_snapshot', {
         storyId: story.id, participantId: group.participantId, target: group.target, tier: 'monthly', periodStart: group.from,
       }))[0] as OverlaySnapshot | undefined
       if (existing) continue
@@ -2964,9 +2948,9 @@ export class InterludeService {
     }
   }
 
-  private async overlaySnapshotsForPrompt(storyId: string, participantId?: string, background = false) {
+  private async overlaySnapshotsForPrompt(viewer: Viewer, storyId: string, participantId?: string, background = false) {
     if (!this.memoryConfig.overlayCompressionEnabled) return [] as OverlaySnapshot[]
-    const rows = await this.dbGet('interlude_overlay_snapshot', { storyId, status: 'active' }, { sort: { periodEnd: 'desc' } }) as OverlaySnapshot[]
+    const rows = await this.store.rows(viewer, 'interlude_overlay_snapshot', { storyId, status: 'active' }, { sort: { periodEnd: 'desc' } }) as OverlaySnapshot[]
     const visible = rows.filter(snapshot => !snapshot.participantId || (background ? this.sharedStoryConfig.shareParticipantDetails : snapshot.participantId === participantId))
     // Current long-term state plus recent short-window deltas is sufficient; older
     // snapshots remain searchable/auditable without permanently taxing prompts.
@@ -2985,8 +2969,8 @@ export class InterludeService {
    * size; snapshots carry the older evolution separately. */
   private async rebuildLiveOverlayState(story: InterludeStory, now: Date) {
     const [applied, snapshots] = await Promise.all([
-      this.dbGet('interlude_state_patch', { storyId: story.id, status: 'applied' }) as Promise<StatePatchProposal[]>,
-      this.dbGet('interlude_overlay_snapshot', { storyId: story.id, status: 'active' }) as Promise<OverlaySnapshot[]>,
+      this.store.rows(OWNER_VIEWER, 'interlude_state_patch', { storyId: story.id, status: 'applied' }) as Promise<StatePatchProposal[]>,
+      this.store.rows(OWNER_VIEWER, 'interlude_overlay_snapshot', { storyId: story.id, status: 'active' }) as Promise<OverlaySnapshot[]>,
     ])
     const overlay = { ...(story.state.settingOverlay ?? {}) }
     const hasGlobalHistory = (target: StatePatchProposal['target']) => snapshots.some(snapshot => snapshot.target === target && !snapshot.participantId)
@@ -3072,7 +3056,7 @@ export class InterludeService {
     const participantId = resolveParticipantId(draft.participantId, draft.sourceEntryIds, entries)
     const sourceEntryIds = (draft.sourceEntryIds ?? []).filter(id => entries.some(entry => entry.id === id)).slice(0, 20)
     const audience = sourceDerivedAudience(sourceEntryIds, entries, draft.audience)
-    const existing = await this.dbGet('interlude_fact', { storyId, status: 'active' })
+    const existing = await this.store.rows(OWNER_VIEWER, 'interlude_fact', { storyId, status: 'active' })
     // 当前先做完全规范化匹配的去重；更复杂的语义去重可在检索层升级时替换。
     // Only merge within one audience so a public duplicate never absorbs private evidence.
     const same = existing.find(fact => normalizeFact(fact.content) === normalizeFact(content)
@@ -3112,7 +3096,7 @@ export class InterludeService {
     const audience = sourceDerivedAudience(sourceEntryIds, entries, draft.audience)
 
     // Merge repeated proposals for one setting path before evaluating them.
-    const candidates = await this.dbGet('interlude_state_patch', {
+    const candidates = await this.store.rows(OWNER_VIEWER, 'interlude_state_patch', {
       storyId: story.id, participantId, target: draft.target, path,
     }) as StatePatchProposal[]
     const matching = candidates.filter(candidate => candidate.audience === audience && patchClaimsMatch(candidate.proposedValue, proposedValue))
@@ -3121,7 +3105,7 @@ export class InterludeService {
     const mergedSourceEntryIds = Array.from(new Set([
       ...(candidate?.sourceEntryIds ?? []), ...sourceEntryIds,
     ])).slice(0, 80)
-    const sourceRows = await this.dbGet('interlude_script_entry', {
+    const sourceRows = await this.store.rows(OWNER_VIEWER, 'interlude_script_entry', {
       storyId: story.id, id: { $in: mergedSourceEntryIds },
     }) as ScriptEntry[]
     const evidence = statePatchEvidence(sourceRows, story.setting.timezone)
@@ -3452,7 +3436,11 @@ function sourceDerivedAudience(sourceEntryIds: readonly number[], entries: reado
 
 /** Group chats have the public tier; their records stay with that group like a visitor's. */
 function groupAudience(groupId: string): Audience {
-  return visitorAudience(`tg-group:${groupId}`)
+  return visitorAudience(groupParticipantKey(groupId))
+}
+
+function groupParticipantKey(groupId: string) {
+  return `tg-group:${normalizeGroupId(groupId)}`
 }
 
 function sessionGroupId(session: Session) {

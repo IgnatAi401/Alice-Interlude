@@ -39,6 +39,17 @@ export function visibleTo(audience: unknown, viewer: Viewer): boolean {
 }
 
 /**
+ * SQL-side form of visibleTo for Storage.get: undefined means no restriction.
+ * Rows without a valid label never match, which keeps the filter fail-closed.
+ */
+export function audienceFilter(viewer: Viewer): { $in: Audience[] } | undefined {
+  if (viewer.tier === 'owner') return undefined
+  const allowed: Audience[] = ['public']
+  if (viewer.participantKey) allowed.push(visitorAudience(viewer.participantKey))
+  return { $in: allowed.filter(audience => audience !== 'private') }
+}
+
+/**
  * Audience of a record derived from other records (facts, memories, patches).
  * Visitor content stays with that visitor and is never relabelled by a model;
  * mixing two visitors, or a visitor with private material, falls back to

@@ -7,6 +7,8 @@
 - 新增必填环境变量 `ALICE_OWNER_CHAT_ID`（主人私聊 chat id，须在 `TELEGRAM_CHAT_IDS` 中）。
 - 管理命令只允许主人私聊执行，其他聊天的管理命令静默忽略；移除 `sharedStory.managerAccounts`。
 - 记忆类记录新增 `audience` 受众标签；模型输出的记忆、事实和设定变化提案需附带 `private`/`public`，后台推进可附 `scriptAudience`。启动时自动迁移（`schema_version=1`），已有记录全部标为 `private`。
+- 记忆读取统一按受众过滤：非主人私聊和群聊只能读到公开记录和自己的记录。迁移前的旧记录都是 `private`，因此这些聊天之前的历史不再进入它们的上下文。
+- 长期事实检索改用 SQLite FTS5 trigram 全文索引，中文可按三字片段命中（`schema_version=2` 自动建立索引）。
 
 ## 0.1.3 · 独立 Telegram 版
 
