@@ -3,13 +3,24 @@ import type { FtsIndex } from '../database'
 import { factScore } from '../memory-helpers'
 import type { AUDIENCE_TABLES } from '../state'
 import type { InterludeArc, InterludeScene, NarrativeFact, ScriptEntry } from '../types'
-import { audienceFilter, visibleTo, type Viewer } from './audience'
+import { audienceFilter, normalizeAudience, visibleTo, type Audience, type Viewer } from './audience'
 import { buildFtsQuery } from './fts'
 
 export type AudienceTable = typeof AUDIENCE_TABLES[number]
 
 /** Full access for owner turns, owner commands and background maintenance (roadmap §7). */
 export const OWNER_VIEWER: Viewer = Object.freeze({ tier: 'owner' as const })
+/** Reads for the public digest and channel posts: public records only, no visitor's. */
+export const PUBLIC_VIEWER: Viewer = Object.freeze({ tier: 'system' as const })
+
+/**
+ * Derived layers (scene, arc, overlay archives) keep one version per track:
+ * owner turns read the private version, every other viewer the public one
+ * (roadmap §4.6). Neither sees both, and no visitor-labelled version exists.
+ */
+export function layerAudience(viewer: Viewer): Audience {
+  return viewer.tier === 'owner' ? 'private' : 'public'
+}
 
 export interface MemoryStoreBackend {
   get(table: string, query: Record<string, unknown>, options?: Record<string, unknown>): Promise<any[]>
@@ -36,8 +47,9 @@ export class MemoryStore {
 
   async rows<T = any>(viewer: Viewer, table: AudienceTable, query: Record<string, unknown> = {}, options: Record<string, unknown> = {}): Promise<T[]> {
     const filter = audienceFilter(viewer)
-    // The filter is spread last so a caller-supplied audience condition cannot widen it.
-    const rows = await this.backend.get(table, filter ? { ...query, audience: filter } : query, options)
+    // A caller-supplied audience condition can only narrow the viewer's filter, never widen it.
+    const audience = filter && 'audience' in query ? { $in: filter.$in.filter(item => requestedAudiences(query.audience).includes(item)) } : filter
+    const rows = await this.backend.get(table, audience ? { ...query, audience } : query, options)
     return rows.filter(row => visibleTo(row.audience, viewer))
   }
 
@@ -99,10 +111,23 @@ export class MemoryStore {
   }
 
   async activeScene(viewer: Viewer, storyId: string): Promise<InterludeScene | null> {
-    return (await this.rows<InterludeScene>(viewer, 'interlude_scene', { storyId, status: 'active' }, { limit: 1, sort: { updatedAt: 'desc' } }))[0] ?? null
+    return this.activeLayer<InterludeScene>(viewer, 'interlude_scene', storyId)
   }
 
   async activeArc(viewer: Viewer, storyId: string): Promise<InterludeArc | null> {
-    return (await this.rows<InterludeArc>(viewer, 'interlude_arc', { storyId, status: 'active' }, { limit: 1, sort: { updatedAt: 'desc' } }))[0] ?? null
+    return this.activeLayer<InterludeArc>(viewer, 'interlude_arc', storyId)
   }
+
+  private async activeLayer<T>(viewer: Viewer, table: 'interlude_scene' | 'interlude_arc', storyId: string): Promise<T | null> {
+    const audience = layerAudience(viewer)
+    const rows = await this.rows(viewer, table, { storyId, status: 'active', audience }, { limit: 1, sort: { updatedAt: 'desc' } })
+    return rows.find(row => normalizeAudience(row.audience) === audience) ?? null
+  }
+}
+
+/** Audiences named by a query condition; any other shape names none (fail-closed). */
+function requestedAudiences(condition: unknown): unknown[] {
+  if (typeof condition === 'string') return [condition]
+  const list = (condition as { $in?: unknown } | null)?.$in
+  return Array.isArray(list) ? list : []
 }

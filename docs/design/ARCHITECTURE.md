@@ -24,7 +24,7 @@ Telegram getUpdates 长轮询
 | `capabilities/registry.ts` | 工具注册表：按等级暴露、执行前二次检查 |
 | `memory/audience.ts`、`memory/classify.ts`、`memory/migrate.ts` | 记忆受众规则（唯一实现）、隐私分类提示词、按 `schema_version` 执行的一次性迁移 |
 | `memory/store.ts`、`memory/fts.ts` | 记忆表唯一读取入口（先按受众过滤再打分截断）；FTS5 trigram 查询构造 |
-| `context/owner.ts`、`context/public.ts` | 发给模型前的上下文构建：主人回合把访客记录包装进 `<visitor_notes>`；非主人回合按白名单构造请求 |
+| `context/owner.ts`、`context/public.ts` | 发给模型前的上下文构建：主人回合把访客记录包装进 `<visitor_notes>`；非主人回合与公开版摘要请求都按白名单构造 |
 | `runtime.ts` | 请求取消、计时器、日志和轻量命令解析 |
 | `database.ts` | Node 内置 SQLite、JSON 记录、查询和接收位置 |
 | `config.ts` | 配置类型、JSON 默认值与校验 |
@@ -48,7 +48,7 @@ Telegram getUpdates 长轮询
 
 Canon 是显式配置的初始设定；Overlay 是证据支持的缓慢变化。场景摘要、剧情弧线、长期事实和短期余波共同构成受预算约束的连续性包。后台压缩继续使用 Claude，事实检索综合 FTS5 bm25 相关度、重要性、置信度和近期程度。
 
-记忆类记录（剧本条目、事实、设定变化提案、场景、剧情弧、Overlay 归档）都带 `audience` 受众标签：`private` 只给主人回合，`public` 所有回合可见，`visitor:<key>` 只给该访客和主人。原始条目由宿主按来源定标签；事实（含主模型每轮写的记忆，写入时转为事实）和后台叙事由模型按隐私标准分类，但引用了访客条目的结果固定归该访客。读取统一经过 `memory/store.ts`，按本轮读者先过滤再检索；事实检索使用 SQLite FTS5 trigram 全文索引，中文按三字片段匹配，查询不足三字时退回词重叠打分。
+记忆类记录（剧本条目、事实、设定变化提案、场景、剧情弧、Overlay 归档）都带 `audience` 受众标签：`private` 只给主人回合，`public` 所有回合可见，`visitor:<key>` 只给该访客和主人。原始条目由宿主按来源定标签；事实（含主模型每轮写的记忆，写入时转为事实）和后台叙事由模型按隐私标准分类，但引用了访客条目的结果固定归该访客。场景、剧情弧等派生层分私密版和公开版两套，公开版只用公开输入单独生成（默认关闭）。读取统一经过 `memory/store.ts`，按本轮读者先过滤再检索；事实检索使用 SQLite FTS5 trigram 全文索引，中文按三字片段匹配，查询不足三字时退回词重叠打分。
 
 当前新消息可以替换首条回复尚未提交的旧模型请求。延迟回复和后续分段保存为意图，到期重新检查当前参与者授权再投递。群聊按群 chat id 授权，管理操作仅限私聊。
 

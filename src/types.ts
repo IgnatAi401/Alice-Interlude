@@ -223,6 +223,9 @@ export interface InterludeArc {
   title: string
   summary: string
   sceneCount: number
+  /** Public arc only: continuity and mood text written by the public digest. */
+  continuity?: ContinuitySnapshot | null
+  mood?: PublicMood | null
   audience: Audience
   createdAt: Date
   updatedAt: Date
@@ -616,9 +619,41 @@ export interface OverlayCompactionDecision {
   majorEvents?: string[]
 }
 
+/** Mood text for public turns; used only while the live Alter direction still matches. */
+export interface PublicMood {
+  direction: EmotionalOffset['direction']
+  description: string
+  generatedAt: string
+}
+
+/**
+ * Input of the public digest (roadmap §4.6). Plain data only, built by
+ * context/public.ts from public records: it deliberately has no story or
+ * participant objects, whose state carries private derived layers.
+ */
+export interface PublicDigestRequest {
+  interval: { from: string; now: string }
+  canon: Record<string, unknown>
+  settingOverlay: StorySettingOverlay
+  scene: { hook: string; summary: string } | null
+  arc: { title: string; summary: string } | null
+  continuity: ContinuitySnapshot | null
+  facts: Array<{ scope: string; content: string; importance: number; unresolved: boolean }>
+  entries: Array<{ id: number; kind: string; actor: string; content: string; occurredAt: string }>
+  mood: { direction: EmotionalOffset['direction']; intensity: number } | null
+}
+
+export interface PublicDigestDecision {
+  scene?: { hook?: string; summary?: string; close?: boolean }
+  arc?: { title?: string; summary?: string }
+  continuity?: unknown
+  mood?: string
+}
+
 export interface NarrativeCompactor {
   compact(request: CompactionRequest): Promise<CompactionDecision>
   compactOverlay(request: OverlayCompactionRequest): Promise<OverlayCompactionDecision>
+  compactPublic(request: PublicDigestRequest): Promise<PublicDigestDecision>
 }
 
 // ========== Alter System Types ==========

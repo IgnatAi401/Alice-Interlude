@@ -2,7 +2,8 @@ import { MemoryConfig } from './config'
 import { Time } from './runtime'
 import { normalizeParticipantState } from './state'
 import { calendarDayKey } from './time'
-import { InterludeParticipant, NarrativeFact, NarrativeIntent, OverlaySnapshot, ScriptEntry, StatePatchProposal } from './types'
+import { InterludeParticipant, NarrativeFact, NarrativeIntent, OverlaySnapshot, ScriptEntry, StatePatchProposal, StorySettingOverlay } from './types'
+import { normalizeAudience } from './memory/audience'
 import { clip, normalizeFact } from './util'
 
 /** Pure helpers for fact retrieval, compaction inputs and setting-overlay evolution. */
@@ -78,6 +79,27 @@ export function mergeNote(existing: string | undefined, next: string) {
   if (!existing) return value
   if (normalizeFact(existing).includes(normalizeFact(value))) return existing
   return `${existing}\n${value}`.slice(-6_000)
+}
+
+/**
+ * Public settingOverlay (roadmap §4.6): merged by code from public, global
+ * character/perspective/world patches only, so no model ever sees private
+ * patches to produce it. Relationship changes concern the owner and stay out.
+ */
+export function publicSettingOverlay(patches: readonly StatePatchProposal[]): StorySettingOverlay {
+  const overlay: StorySettingOverlay = { characterTraits: [] }
+  const ordered = patches
+    .filter(patch => normalizeAudience(patch.audience) === 'public' && !patch.participantId)
+    .sort((a, b) => (a.appliedAt ?? a.createdAt).getTime() - (b.appliedAt ?? b.createdAt).getTime())
+  for (const patch of ordered) {
+    if (patch.target === 'character') {
+      if (patch.path.includes('trait')) overlay.characterTraits!.push(clip(patch.proposedValue, 500))
+      else overlay.characterProfile = mergeNote(overlay.characterProfile, patch.proposedValue)
+    } else if (patch.target === 'perspective') overlay.perspective = mergeNote(overlay.perspective, patch.proposedValue)
+    else if (patch.target === 'world') overlay.world = mergeNote(overlay.world, patch.proposedValue)
+  }
+  overlay.characterTraits = Array.from(new Set(overlay.characterTraits)).slice(-30)
+  return overlay
 }
 
 export function patchClaimsMatch(left: string, right: string) {

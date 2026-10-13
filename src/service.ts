@@ -4,21 +4,21 @@ import { BlindModeConfig, Config, DEFAULT_MEMORY_CONFIG, GroupChatRule, MemoryCo
 import { automaticDeliveryFromPayload, consequenceExpiresAt, consequenceStrength, followUpExpiresAt, hasCompactionEvidence, hasRequiredNarrativeScript, inferredFollowUpCommitment, interactionPromisesFollowUp, isActiveConsequence, isActiveConsequenceDraft, isAutomaticNarrativePhase, mergeDeliverySummary, normalizeDecision, normalizeFollowUpSummary, normalizeGroupVisibleReply, normalizeIntentUpdates, normalizeInteraction, normalizeScenePresenceDrafts, requiresVisibleReplyRecovery, visibleReplyMode } from './decision'
 import { GroupWillingnessState, consumeGroupWillingness, evaluateGroupWillingness } from './group-willingness'
 import { formatLayeredLog, phaseLabel, renderLogMessage } from './logging'
-import { createFactQuery, groupOverlayPatches, groupOverlaySnapshots, limitEntriesByCharacters, mergeNote, normalizeMajorEvents, patchClaimsMatch, resolveParticipantId, statePatchEvidence } from './memory-helpers'
+import { createFactQuery, groupOverlayPatches, groupOverlaySnapshots, limitEntriesByCharacters, mergeNote, normalizeMajorEvents, patchClaimsMatch, publicSettingOverlay, resolveParticipantId, statePatchEvidence } from './memory-helpers'
 import { createCompactor, createNarrator, hasAnthropicCredentials } from './narrator'
 import { Logger, Runtime, MessageSession as Session, Time } from './runtime'
 import { AutoAdvanceConfig, activeRestWindow, automaticIntervalMinutes, groupDueIntents, normalizeFollowUpMinutes, scheduleConversationFollowUps } from './schedule'
-import { AUDIENCE_TABLES, isTransientDatabaseError, mergeParticipantState, mergeSetting, narrativeCursor, normalizeDatabaseRow, normalizeParticipantState, normalizeStoryState, participantRelevance } from './state'
+import { AUDIENCE_TABLES, isTransientDatabaseError, normalizeContinuitySnapshot, mergeParticipantState, mergeSetting, narrativeCursor, normalizeDatabaseRow, normalizeParticipantState, normalizeStoryState, participantRelevance } from './state'
 import { TelegramEnvironment, isAllowedTelegramSession, readTelegramEnvironment, telegramChatId } from './adapters/telegram-private'
 import type { InboundEvent, ReplyHandle } from './router/events'
 import { resolveTier } from './router/tiers'
 import { Audience, ClassifiedAudience, Viewer, derivedAudience, normalizeAudience, visitorAudience } from './memory/audience'
-import { MEMORY_REF_TABLES, MemoryRef, MemoryStore, OWNER_VIEWER } from './memory/store'
+import { MEMORY_REF_TABLES, MemoryRef, MemoryStore, OWNER_VIEWER, PUBLIC_VIEWER, layerAudience } from './memory/store'
 import { ownerNarrativeRequest } from './context/owner'
-import { publicNarrativeRequest } from './context/public'
+import { publicDigestRequest, publicNarrativeRequest } from './context/public'
 import { resolve } from 'node:path'
 import { formatLogTime } from './time'
-import { AgencyConfig, AgencyWindowState, AlterSystemConfig, AlterSystemState, AutomaticDeliverySummary, CompactionDecision, EmotionalOffsetPrompt, FactDraft, FollowUpCommitmentDraft, FollowUpResolutionDraft, GroupContext, GroupMessageContext, IntentDraft, InterludeArc, InterludeParticipant, InterludeScene, InterludeStory, NarrativeCompactor, NarrativeDecision, NarrativeFact, NarrativeImage, NarrativeIntent, NarrativeInteraction, NarrativeProvider, NarrativeRequest, OutgoingMessageDraft, OverlaySnapshot, ParticipantState, ProactiveContactDraft, ScriptEntry, ScriptEntryDraft, StatePatchDraft, StatePatchProposal, StorySetting, StoryState, WebObservation, emptyParticipantState, emptyStorySetting, emptyStoryState } from './types'
+import { AgencyConfig, AgencyWindowState, AlterSystemConfig, AlterSystemState, AutomaticDeliverySummary, CompactionDecision, EmotionalOffsetPrompt, FactDraft, FollowUpCommitmentDraft, FollowUpResolutionDraft, GroupContext, GroupMessageContext, IntentDraft, InterludeArc, InterludeParticipant, InterludeScene, InterludeStory, NarrativeCompactor, NarrativeDecision, NarrativeFact, NarrativeImage, NarrativeIntent, NarrativeInteraction, NarrativeProvider, NarrativeRequest, OutgoingMessageDraft, OverlaySnapshot, ParticipantState, PublicDigestDecision, ProactiveContactDraft, ScriptEntry, ScriptEntryDraft, StatePatchDraft, StatePatchProposal, StorySetting, StoryState, WebObservation, emptyParticipantState, emptyStorySetting, emptyStoryState } from './types'
 import { clampNumber, clip, isRecord, normalizeFact, sameTimestamp, toDate } from './util'
 import { normalizeBrowserIntentDraft } from './web-policy'
 import { WebObserver } from './web-observer'
@@ -494,6 +494,7 @@ export class InterludeService {
     if (current.startsWith('visitor:')) return 'visitor'
     if (current === audience) return 'unchanged'
     await this.dbSet(MEMORY_REF_TABLES[ref.kind], { id: ref.id }, { audience })
+    if (current === 'public') await this.invalidatePublicLayer(storyId)
     return 'changed'
   }
 
@@ -505,6 +506,7 @@ export class InterludeService {
   async forgetAdminRecord(storyId: string, ref: MemoryRef) {
     const record = await this.adminRecord(storyId, ref)
     if (!record) return false
+    if (normalizeAudience(record.audience) === 'public') await this.invalidatePublicLayer(storyId)
     if (ref.kind === 'entry') {
       this.invalidateBufferedNarratives(storyId)
       await this.dbSet('interlude_script_entry', { id: ref.id }, {
@@ -765,6 +767,7 @@ export class InterludeService {
       }
     }
 
+    await this.invalidatePublicLayer(storyId)
     const story = await this.getStory(storyId)
     await this.ensureContinuity(story, new Date())
   }
@@ -1634,6 +1637,7 @@ export class InterludeService {
       : publicNarrativeRequest(draft, {
         accountProfile: account ? { profile: account.profile, relationship: account.relationship } : undefined,
         publicOwnerProfile: this.memoryConfig.publicOwnerProfile ?? '',
+        publicOverlay: await this.publicOverlay(story.id),
       }))
   }
 
@@ -2927,6 +2931,12 @@ export class InterludeService {
   }
 
   private async compactUnlocked(story: InterludeStory, now: Date, force: boolean) {
+    const privateCompacted = await this.compactPrivateUnlocked(story, now, force)
+    const publicCompacted = await this.compactPublicLayer(story, now, force)
+    return privateCompacted || publicCompacted
+  }
+
+  private async compactPrivateUnlocked(story: InterludeStory, now: Date, force: boolean) {
     await this.ensureContinuity(story, now)
     const overlayCompacted = await this.compactOverlayUnlocked(story, now)
     const scene = await this.activeScene(story.id)
@@ -3032,9 +3042,97 @@ export class InterludeService {
     }
   }
 
+  /**
+   * Public derived layer (roadmap §4.6): scene, arc, continuity and mood text
+   * written by a separate call whose input holds public records only, built
+   * by context/public.ts. Visitor records never enter it, so one visitor's
+   * words cannot reach another through a summary (S4, S5).
+   */
+  private async compactPublicLayer(story: InterludeStory, now: Date, force: boolean) {
+    const config = this.memoryConfig
+    if (!config.publicDigestEnabled) return false
+    try {
+      const [scene, arc] = await Promise.all([this.store.activeScene(PUBLIC_VIEWER, story.id), this.store.activeArc(PUBLIC_VIEWER, story.id)])
+      const filter: Record<string, unknown> = { storyId: story.id }
+      if (scene?.lastEntryId != null) filter.id = { $gt: scene.lastEntryId }
+      const fresh = await this.store.rows<ScriptEntry>(PUBLIC_VIEWER, 'interlude_script_entry', filter, {
+        limit: config.compactionEntryLimit, sort: { id: 'desc' },
+      })
+      const entries = limitEntriesByCharacters(fresh.reverse(), config.compactionCharacterLimit)
+      // The first digest starts early so public turns are not left without a layer for long.
+      const threshold = scene?.summary ? Math.max(1, config.publicDigestEntryThreshold ?? 20) : 3
+      if (!entries.length || (!force && entries.length < threshold)) return false
+      const offset = this.emotionalOffsetForPrompt(story)
+      const decision = await this.compactor.compactPublic(publicDigestRequest({
+        story, now, scene, arc, entries,
+        facts: await this.store.facts(PUBLIC_VIEWER, story.id, config.factLimit),
+        publicOverlay: await this.publicOverlay(story.id),
+        offset,
+      }))
+      await this.persistPublicLayer(story.id, scene, arc, decision, entries.at(-1)!.id, offset?.direction, now)
+      this.reportOperation('standard', 'info', story, 'advance', '公开版派生层已更新 公开条目=%d', entries.length)
+      return true
+    } catch (error) {
+      // Optional background work: public turns keep the previous public layer.
+      this.reportOperation('standard', 'warn', story, 'advance', '公开版派生层更新跳过：%s', error)
+      return false
+    }
+  }
+
+  private async persistPublicLayer(storyId: string, scene: InterludeScene | null, arc: InterludeArc | null, decision: PublicDigestDecision, lastEntryId: number, direction: 'serious' | 'relaxed' | undefined, now: Date) {
+    const config = this.memoryConfig
+    const sceneFields = {
+      hook: clip(decision.scene?.hook ?? scene?.hook ?? '', config.sceneHookCharacters),
+      summary: clip(decision.scene?.summary ?? scene?.summary ?? '', config.sceneSummaryCharacters),
+      lastEntryId, updatedAt: now,
+    }
+    if (scene) await this.dbSet('interlude_scene', { id: scene.id }, sceneFields)
+    else await this.dbCreate('interlude_scene', { storyId, status: 'active', startedAt: now, endedAt: null, entryCount: 0, audience: 'public', createdAt: now, ...sceneFields })
+    if (scene && decision.scene?.close) {
+      await this.dbSet('interlude_scene', { id: scene.id }, { status: 'closed', endedAt: now })
+      // The next public scene starts after the same checkpoint with an empty summary.
+      await this.dbCreate('interlude_scene', { storyId, status: 'active', startedAt: now, endedAt: null, hook: '', summary: '', entryCount: 0, lastEntryId, audience: 'public', createdAt: now, updatedAt: now })
+    }
+    const description = clip(decision.mood ?? '', 800)
+    const continuity = normalizeContinuitySnapshot(decision.continuity) ?? arc?.continuity ?? null
+    const arcFields = {
+      title: clip(decision.arc?.title ?? arc?.title ?? 'Beginning', 255),
+      summary: clip(decision.arc?.summary ?? arc?.summary ?? '', config.arcSummaryCharacters),
+      continuity, mood: direction && description ? { direction, description, generatedAt: now.toISOString() } : arc?.mood ?? null,
+      updatedAt: now,
+    }
+    if (arc) await this.dbSet('interlude_arc', { id: arc.id }, arcFields)
+    else await this.dbCreate('interlude_arc', { storyId, status: 'active', sceneCount: 1, audience: 'public', createdAt: now, ...arcFields })
+  }
+
+  /**
+   * Drops the public layer after something public was withdrawn (made
+   * private, forgotten or purged): the old summaries may still contain it.
+   * The next digest rebuilds from the latest public entries.
+   */
+  private async invalidatePublicLayer(storyId: string) {
+    const now = new Date()
+    await this.dbSet('interlude_scene', { storyId, audience: 'public', status: 'active' }, { status: 'closed', hook: '', summary: '', endedAt: now, updatedAt: now })
+    await this.dbSet('interlude_arc', { storyId, audience: 'public', status: 'active' }, { status: 'closed', summary: '', continuity: null, mood: null, updatedAt: now })
+  }
+
+  /** Public settingOverlay, merged by code from public patches; see publicSettingOverlay. */
+  private async publicOverlay(storyId: string) {
+    const patches = await this.store.rows<StatePatchProposal>(PUBLIC_VIEWER, 'interlude_state_patch', { storyId, status: { $in: ['applied', 'compacted'] } })
+    return publicSettingOverlay(patches)
+  }
+
+  /** Owner audit of exactly what public turns receive as derived context. */
+  async adminPublicLayer(storyId: string) {
+    const [scene, arc, overlay] = await Promise.all([
+      this.store.activeScene(PUBLIC_VIEWER, storyId), this.store.activeArc(PUBLIC_VIEWER, storyId), this.publicOverlay(storyId),
+    ])
+    return { enabled: this.memoryConfig.publicDigestEnabled === true, scene, arc, overlay }
+  }
+
   private async overlaySnapshotsForPrompt(viewer: Viewer, storyId: string, participantId?: string, background = false) {
     if (!this.memoryConfig.overlayCompressionEnabled) return [] as OverlaySnapshot[]
-    const rows = await this.store.rows(viewer, 'interlude_overlay_snapshot', { storyId, status: 'active' }, { sort: { periodEnd: 'desc' } }) as OverlaySnapshot[]
+    const rows = await this.store.rows(viewer, 'interlude_overlay_snapshot', { storyId, status: 'active', audience: layerAudience(viewer) }, { sort: { periodEnd: 'desc' } }) as OverlaySnapshot[]
     const visible = rows.filter(snapshot => !snapshot.participantId || (background ? this.sharedStoryConfig.shareParticipantDetails : snapshot.participantId === participantId))
     // Current long-term state plus recent short-window deltas is sufficient; older
     // snapshots remain searchable/auditable without permanently taxing prompts.

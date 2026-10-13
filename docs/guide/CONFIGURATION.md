@@ -69,6 +69,8 @@
 - `runtime.allowProactiveMessages`：是否允许主动可见联系，默认关闭。
 - `memory`：场景压缩阈值、事实数量、人物变化证据和冷却期；检索为全文索引（中文三字片段）与重要度排序。
 - `memory.publicOwnerProfile`：非主人聊天（其他私聊、群聊，以后的网站）里 Alice 可以知道的主人信息，默认为空。这些聊天看不到 `storyDefaults.userProfile`、`relationship` 和主人的私密记忆；只在这里写愿意公开的内容。
+- `memory.publicDigestEnabled`：默认 `false`。开启后，后台会只用公开条目和公开事实另外生成一份场景摘要、剧情弧、continuity 和氛围描述，给非主人聊天使用（关闭时这些聊天看不到这几项）。每次生成是一次额外的压缩模型调用。可用 `/interlude.context.public` 检查生成结果。
+- `memory.publicDigestEntryThreshold`：公开版每积累多少条新的公开条目刷新一次，默认 20；第一次只要 3 条。
 - `agency`：日程、隐私、设备和主动联系间隔。[设计说明](../design/AGENCY_WINDOW.md)
 - `alterSystem`：短期氛围惯性。[设计说明](../design/ALTER_SYSTEM.md)
 - `logging.level`：`silent/error/warn/info/debug`；正文预览默认关闭。

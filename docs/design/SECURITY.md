@@ -25,7 +25,9 @@ Anthropic 接收当前叙事需要的角色设定、连续性记录和消息；�
 - 宿主决定：主人私聊的原始条目、系统事件、管理员注记和手动事实为 `private`；其他私聊的原始条目、剧本和事实固定为 `visitor:tg:<id>`，群聊固定为 `visitor:tg-group:<id>`，模型无法改变。
 - 模型分类：主人回合和后台推进产出的记忆（写入时转为事实）、后台推进的剧本、压缩产出的事实和设定变化提案，由模型按隐私分类标准（`src/memory/classify.ts`，位于固定提示词层）标注 `private`/`public`，只有完全等于 `public` 才算公开。
 - 来源优先：压缩结果引用的条目里只要有访客内容，就固定归该访客；混合了两个访客，或访客与私密内容混合，一律为 `private`。同内容但受众不同的事实不合并。
-- 当前已有的场景摘要、剧情弧和 Overlay 归档由全部内容生成，固定为 `private`；公开版以后用独立调用只读公开输入生成。
+- 私密版场景摘要、剧情弧和 Overlay 归档由全部内容生成，固定为 `private`。公开版（`memory.publicDigestEnabled`）是另一组 `public` 行，由单独的模型调用生成，其输入由 `context/public.ts` 的 `publicDigestRequest` 逐字段构造：只有 Canon、公开条目、公开事实、公开人物变化、上一版公开摘要和 Alter 方向与强度，不含 `story` 对象、主人画像、`fixedPrompt` 和压缩主提示词，也不含任何访客记录。公开人物变化由代码合并公开的全局 character/perspective/world 提案，relationship 提案不进入。
+- 派生层按轨道读取（`memory/store.ts` 的 `layerAudience`）：主人回合只读 private 版，其他回合只读 public 版。调用方给出的受众条件只能缩小读者的过滤范围，不能扩大。
+- 主人把公开记录改回私密、遗忘公开记录或按时间范围删除时，公开版场景和剧情弧（含 continuity 与氛围描述）立即清空，下次从剩余公开条目重建。
 - 迁移 `schema_version=1` 把升级前的所有记忆类记录设为 `private`；`schema_version=3` 把记忆复制为事实时原样保留受众（缺失或非法仍为 `private`）。
 - 主人纠正：`/interlude.memory.public|private` 只能在 `private` 与 `public` 之间切换事实和剧本条目；`visitor:*` 记录一律拒绝修改，访客内容不会因此流向其他访客。访客标识非法时直接拒绝，不会退化成按 `private` 查询。
 
@@ -40,8 +42,8 @@ Anthropic 接收当前叙事需要的角色设定、连续性记录和消息；�
 
 非主人回合的写入限制：不能刷新 continuity；跨会话消息、计划和事实只能归属本参与者（参与者 id 可被猜到，因此不能以其他人为目标）；只能更新本参与者的余波；群聊回合不创建计划（否则会成为全局计划）。
 
-金丝雀检查：`logging.verbosity=diagnostic` 且 `logging.dumpRequests=true` 时，完整请求写入 `data/debug/requests/`。开发时的离线检查覆盖了私密事实、记忆、主人私聊条目、场景、剧情弧、continuity、Overlay 实时状态与归档、在场人物、Alter 描述、自动投递摘要、全局计划与余波、网页观察、默认主人画像，访客与群聊请求中均不出现；访客之间互不可见；主人请求中的访客内容只出现在 `<visitor_notes>` 内。
+金丝雀检查：`logging.verbosity=diagnostic` 且 `logging.dumpRequests=true` 时，完整请求写入 `data/debug/requests/`。公开版另有离线检查：生成请求不含私密与访客金丝雀，访客回合拿到公开版、主人回合只拿私密版，撤回公开条目后公开版清空且重建时不含被撤回内容。开发时的离线检查覆盖了私密事实、记忆、主人私聊条目、场景、剧情弧、continuity、Overlay 实时状态与归档、在场人物、Alter 描述、自动投递摘要、全局计划与余波、网页观察、默认主人画像，访客与群聊请求中均不出现；访客之间互不可见；主人请求中的访客内容只出现在 `<visitor_notes>` 内。
 
-已知未覆盖：主人回合里的其他参与者摘要（关系状态、未结话题）没有包装为引用数据；Alter 描述与压缩仍由全部内容生成，公开版派生层尚未实现（因此非主人回合目前看不到场景摘要和 Alter 描述）。
+已知未覆盖：主人回合里的其他参与者摘要（关系状态、未结话题）没有包装为引用数据；主叙事的系统提示词（`model.mainPrompt`、`fixedPrompt`、`stylePrompt`）所有回合共用，不要在其中写主人隐私；公开版关闭时非主人回合看不到场景摘要、continuity 和 Alter 描述。
 
 删除数据的管理命令保留运行时确认步骤。项目没有安装系统服务或修改全局配置。

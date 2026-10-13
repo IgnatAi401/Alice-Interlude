@@ -128,6 +128,24 @@ export function registerCommands(ctx: Runtime, service: InterludeService) {
       ].join('\n')
     })
 
+  ctx.command('interlude.context.public', '管理员：查看访客与频道回合拿到的公开版场景、剧情弧、continuity 和人物变化')
+    .action(async ({ session = missingSession() }) => {
+      if (!requireManager(service, session)) return '当前 Telegram 聊天没有管理权限。'
+      const story = await requireStory(service, session)
+      if (typeof story === 'string') return story
+      const { enabled, scene, arc, overlay } = await service.adminPublicLayer(story.id)
+      const continuity = arc?.continuity
+      return [
+        `公开版生成：${enabled ? '开启' : '关闭（memory.publicDigestEnabled）'}`,
+        `场景引子：${scene?.hook || '尚未生成'}`,
+        `场景摘要：${scene?.summary || '尚未生成'}`,
+        `剧情弧线：${arc?.title || '无'} — ${arc?.summary || '尚未生成'}`,
+        `continuity：${continuity ? [continuity.current, ...continuity.next, ...continuity.recent, ...continuity.salient].filter(Boolean).join(' / ') : '尚未生成'}`,
+        `氛围描述：${arc?.mood ? `[${arc.mood.direction}] ${arc.mood.description}` : '无'}`,
+        `人物变化（来自公开提案）：${JSON.stringify(overlay)}`,
+      ].join('\n')
+    })
+
   ctx.command('interlude.compact', '立即整理一次当前故事的旧剧本；用于测试记忆压缩')
     .action(async ({ session = missingSession() }) => {
       if (!requireManager(service, session)) return '当前 Telegram 聊天没有管理权限。'

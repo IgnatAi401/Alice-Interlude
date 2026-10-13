@@ -102,6 +102,10 @@ export interface MemoryConfig {
   overlayMonthlySummaryCharacters?: number
   /** What public turns (other chats, groups, later the website) may know about the owner; empty by default. */
   publicOwnerProfile?: string
+  /** Generate the public scene/arc/continuity with separate public-only model calls (roadmap §4.6). */
+  publicDigestEnabled?: boolean
+  /** New public script entries needed before the public layer is refreshed. */
+  publicDigestEntryThreshold?: number
 }
 
 export interface RuntimeConfig {
@@ -233,7 +237,7 @@ export const DEFAULT_MEMORY_CONFIG: MemoryConfig = {
   activeConsequenceDefaultStrength: 0.55, overlayCompressionEnabled: true, overlayRecentDays: 2,
   overlayMonthlyAfterDays: 10, overlayWeeklyWindowDays: 5, overlayMonthlyWindowDays: 10,
   overlayWeeklySummaryCharacters: 1_600, overlayMonthlySummaryCharacters: 2_400,
-  publicOwnerProfile: '',
+  publicOwnerProfile: '', publicDigestEnabled: false, publicDigestEntryThreshold: 20,
 }
 
 /** Programmatic callers may omit numeric fields. Normalise them so one

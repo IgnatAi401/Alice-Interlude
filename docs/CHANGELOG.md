@@ -13,6 +13,7 @@
 - 主人回合中的访客记录包装在 `<visitor_notes>` 中，作为引用资料而非指令。
 - 新增记忆管理命令 `/interlude.memory.search`、`.public`、`.private`、`.visitors`、`.visitor`；`.forget` 支持事实和剧本条目；列表显示 `f/e` 编号与 🔒/🌐/👤 受众标记。
 - 记忆并入长期事实：模型输出的 `memories` 按 `category` 映射为事实的 scope 写入 `interlude_fact`，相同内容自动合并；启动时迁移（`schema_version=3`）把已有记忆复制为事实，旧行标为 `migrated`。提示词不再单独发送 `memories` 块，长期事实预算相应提高；`/interlude.memory` 改为显示长期事实。
+- 新增公开版派生层（默认关闭，`memory.publicDigestEnabled`）：只用公开条目和公开事实单独生成场景摘要、剧情弧、continuity 与氛围描述，供非主人聊天使用；公开人物变化直接由公开提案合并。主人撤回或删除公开内容时自动清空重建。新增 `/interlude.context.public` 查看访客实际拿到的公开版。
 - 新增调试开关 `logging.dumpRequests`（需 `verbosity=diagnostic`），导出完整模型请求用于隐私检查。
 
 ## 0.1.3 · 独立 Telegram 版

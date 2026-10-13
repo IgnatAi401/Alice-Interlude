@@ -1,10 +1,12 @@
-import { emptyStoryState, type InterludeParticipant, type NarrativeRequest } from '../types'
+import { emptyStoryState, type EmotionalOffset, type InterludeArc, type InterludeParticipant, type InterludeScene, type InterludeStory, type NarrativeFact, type NarrativeRequest, type PublicDigestRequest, type ScriptEntry, type StorySettingOverlay } from '../types'
 
 export interface PublicContextOptions {
   /** Explicit profile for this chat from telegram.userAccounts; storyDefaults describe the owner and are never used here. */
   accountProfile?: { profile?: string; relationship?: string }
   /** memory.publicOwnerProfile: what may be said about the owner to strangers. */
   publicOwnerProfile: string
+  /** Code-merged overlay from public patches (memory-helpers publicSettingOverlay). */
+  publicOverlay: StorySettingOverlay
 }
 
 /**
@@ -21,7 +23,10 @@ export function publicNarrativeRequest(draft: NarrativeRequest, options: PublicC
   const own = draft.participant ? publicParticipant(draft.participant, options.accountProfile) : null
   const ownId = own?.id
   const ownOnly = <T extends { participantId: string }>(items: T[]) => ownId ? items.filter(item => item.participantId === ownId) : []
-  const { character, world, perspective, supportingCast, location, style, timezone } = draft.story.setting
+  // sceneContext was read with a public viewer, so it holds the public scene and arc (roadmap §4.6).
+  const publicArc = draft.sceneContext?.arc ?? null
+  const { continuity, mood, ...arc } = publicArc ?? {} as Partial<InterludeArc>
+  const offset = draft.emotionalOffset
   return {
     phase: draft.phase,
     // Continuity is a private derived layer; a public turn may neither read nor rewrite it.
@@ -29,10 +34,10 @@ export function publicNarrativeRequest(draft: NarrativeRequest, options: PublicC
     outputRecovery: draft.outputRecovery,
     story: {
       ...draft.story,
-      // Canon comes from config.json; user/relationship defaults describe the owner.
-      setting: { character, world, perspective, supportingCast, location, style, timezone, user: { displayName: '', profile: '' }, relationship: '' },
-      // continuity, settingOverlay, scene presence and the agency/alter internals are all private derived state.
-      state: emptyStoryState(),
+      setting: publicCanon(draft.story),
+      // Private continuity, overlay, scene presence and agency/alter internals never come in;
+      // only their public versions do.
+      state: { ...emptyStoryState(), settingOverlay: options.publicOverlay, continuitySnapshot: continuity ?? undefined },
     },
     from: draft.from,
     now: draft.now,
@@ -46,19 +51,61 @@ export function publicNarrativeRequest(draft: NarrativeRequest, options: PublicC
     activeConsequences: ownOnly(draft.activeConsequences),
     supersededIntents: ownOnly(draft.supersededIntents),
     recentEntries: draft.recentEntries,
-    sceneContext: draft.sceneContext,
+    sceneContext: { scene: draft.sceneContext?.scene ?? null, arc: publicArc ? arc as InterludeArc : null },
     facts: draft.facts,
     overlaySnapshots: draft.overlaySnapshots,
     webContext: ownOnly(draft.webContext ?? []),
     groupContext: draft.groupContext,
     alterEnabled: draft.alterEnabled,
-    // Direction and intensity are shared mood; the description is generated from private scripts.
-    emotionalOffset: draft.emotionalOffset ? { ...draft.emotionalOffset, description: '' } : null,
+    // Direction and intensity are shared mood. The private description comes from private
+    // scripts; the public one is used only while it was written for the same direction.
+    emotionalOffset: offset ? { ...offset, description: mood?.direction === offset.direction ? mood.description : '' } : null,
     agencyEnabled: false,
     agencyWindow: null,
     automaticDeliverySummaries: [],
     followUpCommitments: ownOnly(draft.followUpCommitments ?? []),
     publicOwnerProfile: options.publicOwnerProfile.trim(),
+  }
+}
+
+/** Canon comes from config.json; user/relationship defaults describe the owner and are dropped. */
+function publicCanon(story: InterludeStory): InterludeStory['setting'] {
+  const { character, world, perspective, supportingCast, location, style, timezone } = story.setting
+  return { character, world, perspective, supportingCast, location, style, timezone, user: { displayName: '', profile: '' }, relationship: '' }
+}
+
+export interface PublicDigestSources {
+  story: InterludeStory
+  now: Date
+  scene: InterludeScene | null
+  arc: InterludeArc | null
+  /** Records read with PUBLIC_VIEWER; the builder rechecks the label anyway. */
+  entries: ScriptEntry[]
+  facts: NarrativeFact[]
+  publicOverlay: StorySettingOverlay
+  offset: Pick<EmotionalOffset, 'direction' | 'intensity'> | null
+}
+
+/**
+ * Input of the public digest (roadmap §4.6), copied field by field. The
+ * model call that writes the public layer sees nothing else, so private
+ * material cannot leak into it even through a summarizing model (S4).
+ */
+export function publicDigestRequest(sources: PublicDigestSources): PublicDigestRequest {
+  const isPublic = (record: { audience: unknown }) => record.audience === 'public'
+  const { user: _user, relationship: _relationship, ...canon } = publicCanon(sources.story)
+  const scene = sources.scene && isPublic(sources.scene) ? sources.scene : null
+  const arc = sources.arc && isPublic(sources.arc) ? sources.arc : null
+  return {
+    interval: { from: (scene?.updatedAt ?? sources.entries[0]?.occurredAt ?? sources.now).toISOString(), now: sources.now.toISOString() },
+    canon,
+    settingOverlay: sources.publicOverlay,
+    scene: scene ? { hook: scene.hook, summary: scene.summary } : null,
+    arc: arc ? { title: arc.title, summary: arc.summary } : null,
+    continuity: arc?.continuity ?? null,
+    facts: sources.facts.filter(isPublic).map(fact => ({ scope: fact.scope, content: fact.content, importance: fact.importance, unresolved: fact.unresolved })),
+    entries: sources.entries.filter(isPublic).map(entry => ({ id: entry.id, kind: entry.kind, actor: entry.actor, content: entry.content, occurredAt: entry.occurredAt.toISOString() })),
+    mood: sources.offset ? { direction: sources.offset.direction, intensity: sources.offset.intensity } : null,
   }
 }
 

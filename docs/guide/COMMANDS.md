@@ -12,6 +12,7 @@
 | `/interlude.timeline [条数]` | 查看近期记录 |
 | `/interlude.memory [条数]` | 查看与当前私聊最相关的长期事实 |
 | `/interlude.context` | 场景、长期事实与人物变化 |
+| `/interlude.context.public` | 访客和频道回合拿到的公开版场景、剧情弧、continuity 与人物变化 |
 | `/interlude.compact` | 立即整理已发生的剧本 |
 | `/interlude.setup <JSON>` | 修改当前故事设定 |
 | `/interlude.script [条数]` | 查看原始剧本条目 |
