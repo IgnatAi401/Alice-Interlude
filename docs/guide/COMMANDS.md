@@ -23,6 +23,7 @@
 | `/interlude.memory.public <编号>` | 把记录设为公开（访客和频道可见） |
 | `/interlude.memory.private <编号>` | 把记录设为私密（只有主人回合可见） |
 | `/interlude.memory.forget <编号>` | 事实标为失效；剧本条目替换为占位符（需确认） |
+| `/interlude.memory.consolidate` | 立即执行一次每晚记忆整理（需确认） |
 | `/interlude.memory.visitors` | 最近的访客（其他私聊、群聊） |
 | `/interlude.memory.visitor <标识>` | 某个访客的记录；标识形如 `tg:123`、`tg-group:-100123` |
 | `/interlude.memory.intents [条数]` | 查看待执行计划 |

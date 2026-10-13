@@ -106,6 +106,12 @@ export interface MemoryConfig {
   publicDigestEnabled?: boolean
   /** New public script entries needed before the public layer is refreshed. */
   publicDigestEntryThreshold?: number
+  /** Nightly consolidation (roadmap §4.8): near-duplicate merge, contradiction check, visitor expiry. */
+  consolidateEnabled?: boolean
+  /** Story-local HH:MM after which the nightly consolidation runs once per day. */
+  consolidateAt?: string
+  /** Visitor records older than this are deleted by consolidation; 0 keeps them. */
+  visitorTtlDays?: number
 }
 
 export interface RuntimeConfig {
@@ -238,6 +244,7 @@ export const DEFAULT_MEMORY_CONFIG: MemoryConfig = {
   overlayMonthlyAfterDays: 10, overlayWeeklyWindowDays: 5, overlayMonthlyWindowDays: 10,
   overlayWeeklySummaryCharacters: 1_600, overlayMonthlySummaryCharacters: 2_400,
   publicOwnerProfile: '', publicDigestEnabled: false, publicDigestEntryThreshold: 20,
+  consolidateEnabled: false, consolidateAt: '04:00', visitorTtlDays: 30,
 }
 
 /** Programmatic callers may omit numeric fields. Normalise them so one
@@ -336,6 +343,7 @@ export function resolveConfig(input: unknown): Config {
       maxStoriesPerCompactionRun: config.runtime.maxStoriesPerSweep,
       recentEntryLimit: config.runtime.contextEntryLimit, factLimit: config.runtime.memoryLimit }, memory, 'memory')
   }
+  if (config.memory?.consolidateAt !== undefined && !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(config.memory.consolidateAt)) throw new Error('memory.consolidateAt 必须是 HH:MM。')
   try { new Intl.DateTimeFormat('en-US', { timeZone: config.storyDefaults.timezone }) } catch { throw new Error('storyDefaults.timezone 无效。') }
   for (const model of [config.model.model, config.model.compaction?.model, config.alterSystem?.model]) {
     if (model?.trim() && !/^claude-[a-z0-9.-]+$/i.test(model)) throw new Error('所有任务仅支持 Claude 模型代码。')

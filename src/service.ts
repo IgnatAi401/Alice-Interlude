@@ -7,7 +7,7 @@ import { formatLayeredLog, phaseLabel, renderLogMessage } from './logging'
 import { createFactQuery, groupOverlayPatches, groupOverlaySnapshots, limitEntriesByCharacters, mergeNote, normalizeMajorEvents, patchClaimsMatch, publicSettingOverlay, resolveParticipantId, statePatchEvidence } from './memory-helpers'
 import { createCompactor, createNarrator, hasAnthropicCredentials } from './narrator'
 import { Logger, Runtime, MessageSession as Session, Time } from './runtime'
-import { AutoAdvanceConfig, activeRestWindow, automaticIntervalMinutes, groupDueIntents, normalizeFollowUpMinutes, scheduleConversationFollowUps } from './schedule'
+import { AutoAdvanceConfig, activeRestWindow, clockMinutes, automaticIntervalMinutes, groupDueIntents, normalizeFollowUpMinutes, scheduleConversationFollowUps } from './schedule'
 import { AUDIENCE_TABLES, isTransientDatabaseError, normalizeContinuitySnapshot, mergeParticipantState, mergeSetting, narrativeCursor, normalizeDatabaseRow, normalizeParticipantState, normalizeStoryState, participantRelevance } from './state'
 import { TelegramEnvironment, isAllowedTelegramSession, readTelegramEnvironment, telegramChatId } from './adapters/telegram-private'
 import type { InboundEvent, ReplyHandle } from './router/events'
@@ -17,7 +17,8 @@ import { MEMORY_REF_TABLES, MemoryRef, MemoryStore, OWNER_VIEWER, PUBLIC_VIEWER,
 import { ownerNarrativeRequest } from './context/owner'
 import { publicDigestRequest, publicNarrativeRequest } from './context/public'
 import { resolve } from 'node:path'
-import { formatLogTime } from './time'
+import { calendarDayKey, formatLogTime, localClockMinutes } from './time'
+import { EXPIRED_PLACEHOLDER, consolidationRequest, duplicateMerges, validSupersessions, visitorExpiryCutoff } from './memory/consolidate'
 import { AgencyConfig, AgencyWindowState, AlterSystemConfig, AlterSystemState, AutomaticDeliverySummary, CompactionDecision, EmotionalOffsetPrompt, FactDraft, FollowUpCommitmentDraft, FollowUpResolutionDraft, GroupContext, GroupMessageContext, IntentDraft, InterludeArc, InterludeParticipant, InterludeScene, InterludeStory, NarrativeCompactor, NarrativeDecision, NarrativeFact, NarrativeImage, NarrativeIntent, NarrativeInteraction, NarrativeProvider, NarrativeRequest, OutgoingMessageDraft, OverlaySnapshot, ParticipantState, PublicDigestDecision, ProactiveContactDraft, ScriptEntry, ScriptEntryDraft, StatePatchDraft, StatePatchProposal, StorySetting, StoryState, WebObservation, emptyParticipantState, emptyStorySetting, emptyStoryState } from './types'
 import { clampNumber, clip, isRecord, normalizeFact, sameTimestamp, toDate } from './util'
 import { normalizeBrowserIntentDraft } from './web-policy'
@@ -2925,9 +2926,83 @@ export class InterludeService {
       const story = await this.getCanonicalStory()
       if (!story || !this.canHandleStory(story)) return
       this.scheduleCompaction(story.id)
+      this.scheduleNightlyConsolidation(story)
     } finally {
       this.compactionSweepRunning = false
     }
+  }
+
+  /**
+   * Nightly consolidation (roadmap §4.8) runs once per story-local day after
+   * memory.consolidateAt. A Mac that slept through that time catches up at
+   * the next background pass. The day is recorded before running so a
+   * failing run is not retried every few minutes.
+   */
+  private scheduleNightlyConsolidation(story: InterludeStory, now = new Date()) {
+    const config = this.memoryConfig
+    if (!config.consolidateEnabled) return
+    const timezone = story.setting.timezone
+    const key = `consolidate:${story.id}`, today = calendarDayKey(now, timezone)
+    if (localClockMinutes(now, timezone) < (clockMinutes(config.consolidateAt ?? '04:00') ?? 240) || this.ctx.database.getMeta(key) === today) return
+    this.ctx.database.setMeta(key, today)
+    void this.consolidateStory(story).catch(error => this.reportStandalone('warn', '每晚记忆整理失败 错误=%s', error))
+  }
+
+  async consolidateStory(story: InterludeStory) {
+    return this.serial(story.id, () => this.consolidateUnlocked(story.id, new Date()))
+  }
+
+  private async consolidateUnlocked(storyId: string, now: Date) {
+    const story = await this.getStory(storyId)
+    const result = { merged: 0, contradicted: 0, expired: await this.expireVisitorRecords(storyId, now) }
+    let facts = await this.store.rows<NarrativeFact>(OWNER_VIEWER, 'interlude_fact', { storyId, status: 'active' })
+    for (const { keep, drop } of duplicateMerges(facts)) {
+      await this.dbSet('interlude_fact', { id: keep.id }, {
+        importance: Math.max(keep.importance, ...drop.map(fact => fact.importance)),
+        confidence: Math.max(keep.confidence, ...drop.map(fact => fact.confidence)),
+        unresolved: keep.unresolved || drop.some(fact => fact.unresolved),
+        sourceEntryIds: Array.from(new Set([keep, ...drop].flatMap(fact => fact.sourceEntryIds))).slice(-40),
+        lastSeenAt: new Date(Math.max(...[keep, ...drop].map(fact => fact.lastSeenAt.getTime()))), updatedAt: now,
+      })
+      await this.dbSet('interlude_fact', { id: { $in: drop.map(fact => fact.id) } }, { status: 'superseded', supersededBy: keep.id, updatedAt: now })
+      result.merged += drop.length
+    }
+    facts = await this.store.rows<NarrativeFact>(OWNER_VIEWER, 'interlude_fact', { storyId, status: 'active' })
+    try {
+      const request = consolidationRequest(facts)
+      const accepted = request.facts.length ? validSupersessions(facts, await this.compactor.consolidateFacts(request)) : []
+      for (const { drop, by } of accepted) await this.dbSet('interlude_fact', { id: drop.id }, { status: 'superseded', supersededBy: by.id, updatedAt: now })
+      result.contradicted = accepted.length
+    } catch (error) {
+      // Duplicate merge and expiry already ran; the model check is retried tomorrow.
+      this.reportOperation('standard', 'warn', story, 'advance', '每晚记忆整理：矛盾检查跳过：%s', error)
+    }
+    this.reportOperation('standard', 'info', story, 'advance', '每晚记忆整理完成 合并重复=%d 矛盾失效=%d 访客过期=%d', result.merged, result.contradicted, result.expired)
+    return result
+  }
+
+  /**
+   * Visitor records older than memory.visitorTtlDays are replaced with a
+   * placeholder (roadmap §4.8, §5.4); private and public records never expire.
+   */
+  private async expireVisitorRecords(storyId: string, now: Date) {
+    const cutoff = visitorExpiryCutoff(this.memoryConfig.visitorTtlDays, now)
+    if (!cutoff) return 0
+    const visitor = { $startsWith: 'visitor:' }
+    const targets = [
+      { table: 'interlude_script_entry', time: 'occurredAt', placeholder: { kind: 'redacted', actor: 'system', content: EXPIRED_PLACEHOLDER, metadata: { redacted: true } } },
+      { table: 'interlude_fact', time: 'createdAt', placeholder: { status: 'superseded', content: EXPIRED_PLACEHOLDER } },
+      { table: 'interlude_memory', time: 'createdAt', placeholder: { status: 'deleted', content: EXPIRED_PLACEHOLDER } },
+      { table: 'interlude_state_patch', time: 'createdAt', placeholder: { status: 'rejected', proposedValue: EXPIRED_PLACEHOLDER, evidence: '' } },
+    ] as const
+    let expired = 0
+    for (const { table, time, placeholder } of targets) {
+      const rows = await this.store.rows(OWNER_VIEWER, table, { storyId, audience: visitor, [time]: { $lte: cutoff } })
+      const ids = rows.filter(row => (row.content ?? row.proposedValue) !== EXPIRED_PLACEHOLDER).map(row => row.id)
+      if (ids.length) await this.dbSet(table, { id: { $in: ids } }, { ...placeholder, ...(table === 'interlude_script_entry' ? {} : { updatedAt: now }) })
+      expired += ids.length
+    }
+    return expired
   }
 
   private async compactUnlocked(story: InterludeStory, now: Date, force: boolean) {

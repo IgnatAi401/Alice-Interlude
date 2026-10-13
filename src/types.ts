@@ -650,10 +650,24 @@ export interface PublicDigestDecision {
   mood?: string
 }
 
+/**
+ * Nightly contradiction check (roadmap §4.8). Groups are opaque labels for
+ * audience + relationship; the host only accepts a supersession inside one
+ * group and by a newer fact.
+ */
+export interface FactConsolidationRequest {
+  facts: Array<{ id: number; group: string; scope: string; content: string; createdAt: string }>
+}
+
+export interface FactConsolidationDecision {
+  superseded?: Array<{ id: number; by: number }>
+}
+
 export interface NarrativeCompactor {
   compact(request: CompactionRequest): Promise<CompactionDecision>
   compactOverlay(request: OverlayCompactionRequest): Promise<OverlayCompactionDecision>
   compactPublic(request: PublicDigestRequest): Promise<PublicDigestDecision>
+  consolidateFacts(request: FactConsolidationRequest): Promise<FactConsolidationDecision>
 }
 
 // ========== Alter System Types ==========

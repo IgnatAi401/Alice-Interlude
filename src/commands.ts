@@ -268,6 +268,18 @@ export function registerCommands(ctx: Runtime, service: InterludeService) {
       ].join('\n')
     })
 
+  ctx.command('interlude.memory.consolidate', '管理员：立即执行一次每晚记忆整理（合并重复事实、矛盾检查、删除过期访客记录）；执行前会询问 y/n')
+    .action(async ({ session = missingSession() }) => {
+      if (!requireManager(service, session)) return '当前 Telegram 聊天没有管理权限。'
+      const story = await requireStory(service, session)
+      if (typeof story === 'string') return story
+      const ttl = service.config.memory?.visitorTtlDays ?? 30
+      const expiry = ttl > 0 ? `超过 ${ttl} 天的访客记录会被替换为占位符，无法恢复` : '访客记录不会过期（visitorTtlDays=0）'
+      if (!await askConfirmation(session, `即将整理长期事实：合并重复、让被新事实推翻的旧事实失效；${expiry}。确认执行吗？(y/n)`)) return '操作已取消。'
+      const result = await service.consolidateStory(story)
+      return `记忆整理完成：合并重复事实 ${result.merged} 条，矛盾失效 ${result.contradicted} 条，过期访客记录 ${result.expired} 条。`
+    })
+
   ctx.command('interlude.memory.intents [limit:number]', '管理员：查看等待中的计划、提醒、承诺与剧情余波')
     .action(async ({ session = missingSession() }, limit = 20) => {
       if (!requireManager(service, session)) return '当前 Telegram 聊天没有管理权限。'

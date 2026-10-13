@@ -23,6 +23,7 @@ Telegram getUpdates 长轮询
 | `router/tiers.ts` | 信任等级、能力表和唯一的 owner 判定 |
 | `capabilities/registry.ts` | 工具注册表：按等级暴露、执行前二次检查 |
 | `memory/audience.ts`、`memory/classify.ts`、`memory/migrate.ts` | 记忆受众规则（唯一实现）、隐私分类提示词、按 `schema_version` 执行的一次性迁移 |
+| `memory/consolidate.ts` | 每晚整理规则：近似重复合并、矛盾替代校验、访客记录过期 |
 | `memory/store.ts`、`memory/fts.ts` | 记忆表唯一读取入口（先按受众过滤再打分截断）；FTS5 trigram 查询构造 |
 | `context/owner.ts`、`context/public.ts` | 发给模型前的上下文构建：主人回合把访客记录包装进 `<visitor_notes>`；非主人回合与公开版摘要请求都按白名单构造 |
 | `runtime.ts` | 请求取消、计时器、日志和轻量命令解析 |

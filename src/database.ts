@@ -62,6 +62,8 @@ export class Storage {
           if (operator === '$in' && Array.isArray(operand)) {
             clauses.push(operand.length ? `${field} IN (${operand.map(() => '?').join(',')})` : '0')
             values.push(...operand as SQLInputValue[])
+          } else if (operator === '$startsWith' && typeof operand === 'string') {
+            add(`${field} LIKE ? ESCAPE '\\'`, `${operand.replace(/[\\%_]/g, '\\$&')}%`)
           } else {
             const op = ({ $gt: '>', $gte: '>=', $lte: '<=' } as Record<string, string>)[operator]
             if (!op) throw new Error('Unsupported storage query operator.')
