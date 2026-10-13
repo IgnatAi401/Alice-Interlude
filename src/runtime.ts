@@ -21,11 +21,17 @@ export interface MessageSession {
   prompt(timeout: number): Promise<string | undefined>
 }
 
+export interface InlineButton { text: string; data: string }
+
 export interface BotTransport {
   platform: 'telegram'
   selfId: string
   sendMessage(chatId: string, content: string): Promise<unknown>
   sendPrivateMessage(chatId: string, content: string): Promise<unknown>
+  /** One message with a row of inline buttons; returns its message id. */
+  sendInlinePrompt?(chatId: string, content: string, buttons: InlineButton[]): Promise<string>
+  /** Replaces a prompt's text and removes its buttons. */
+  closeInlinePrompt?(chatId: string, messageId: string, content: string): Promise<void>
 }
 
 export class Logger {

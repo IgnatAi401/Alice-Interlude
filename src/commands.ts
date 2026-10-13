@@ -208,6 +208,31 @@ export function registerCommands(ctx: Runtime, service: InterludeService) {
       return await service.forgetAdminRecord(story.id, ref) ? `${label} 已删除${ref.kind === 'fact' ? '（保留为失效记录）' : ''}。` : `未找到有效的 ${label}。`
     })
 
+  ctx.command('interlude.exec [id:number]', '管理员：查看最近的命令审批记录；带编号时显示该条的完整输出')
+    .action(async ({ session = missingSession() }, id) => {
+      if (!requireManager(service, session)) return '当前 Telegram 聊天没有管理权限。'
+      const status: Record<string, string> = {
+        proposed: '未发出', pending: '待审批', running: '执行中', done: '已执行', denied: '已拒绝',
+        expired: '已过期', cancelled: '已取消', interrupted: '被重启中断',
+      }
+      const time = (value?: Date) => value ? value.toISOString().slice(5, 16).replace('T', ' ') : '-'
+      if (id !== undefined) {
+        const row = Number.isInteger(id) ? await service.adminApproval(id) : undefined
+        if (!row) return `没有审批 #${id}。`
+        return [
+          `审批 #${row.id}：${status[row.status] ?? row.status}`,
+          `请求 ${time(row.requestedAt ?? row.createdAt)}　决定 ${time(row.decidedAt)}　结束 ${time(row.finishedAt)}`,
+          ...(row.status === 'done' ? [`退出码 ${row.exitCode ?? '无'}${row.timedOut ? '（超时终止）' : ''}`] : []),
+          `理由：${row.reason || '（未说明）'}`,
+          '', row.command,
+          ...(row.output !== undefined ? ['', '输出：', clip(row.output, 3_000) || '（无输出）'] : []),
+        ].join('\n')
+      }
+      const rows = await service.adminApprovals(10)
+      if (!rows.length) return '还没有命令审批记录。'
+      return rows.map(row => `#${row.id} ${status[row.status] ?? row.status}${row.status === 'done' ? ` 退出码${row.exitCode ?? '无'}` : ''} · ${time(row.requestedAt ?? row.createdAt)} · ${clip(row.command.replace(/\s+/g, ' '), 80)}`).join('\n')
+    })
+
   ctx.command('interlude.memory.search <query:text>', '管理员：全文搜索长期事实和剧本条目')
     .action(async ({ session = missingSession() }, query) => {
       if (!requireManager(service, session)) return '当前 Telegram 聊天没有管理权限。'

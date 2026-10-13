@@ -22,6 +22,9 @@ Telegram getUpdates 长轮询
 | `router/events.ts`、`router/router.ts` | 与渠道无关的消息类型；Router 是唯一给事件定信任等级的地方 |
 | `router/tiers.ts` | 信任等级、能力表和唯一的 owner 判定 |
 | `capabilities/registry.ts` | 工具注册表：按等级暴露、执行前二次检查 |
+| `capabilities/loop.ts` | tool use 循环（步数上限后强制最终回答）和单回合工具会话 |
+| `capabilities/recall.ts`、`capabilities/skills.ts` | 记忆检索工具；skills 索引与 `read_skill` |
+| `capabilities/exec.ts` | `exec` 工具、审批状态机（`interlude_approval`）和命令执行 |
 | `memory/audience.ts`、`memory/classify.ts`、`memory/migrate.ts` | 记忆受众规则（唯一实现）、隐私分类提示词、按 `schema_version` 执行的一次性迁移 |
 | `memory/consolidate.ts` | 每晚整理规则：近似重复合并、矛盾替代校验、访客记录过期 |
 | `memory/store.ts`、`memory/fts.ts` | 记忆表唯一读取入口（先按受众过滤再打分截断）；FTS5 trigram 查询构造 |

@@ -16,6 +16,8 @@
 - 新增公开版派生层（默认关闭，`memory.publicDigestEnabled`）：只用公开条目和公开事实单独生成场景摘要、剧情弧、continuity 与氛围描述，供非主人聊天使用；公开人物变化直接由公开提案合并。主人撤回或删除公开内容时自动清空重建。新增 `/interlude.context.public` 查看访客实际拿到的公开版。
 - 新增每晚记忆整理（默认关闭，`memory.consolidateEnabled`、`consolidateAt`、`visitorTtlDays`）：合并近似重复的事实，让被新事实推翻的旧事实失效，删除超过保留期的访客记录（替换为占位符）。可用 `/interlude.memory.consolidate` 手动执行。
 - 新增调试开关 `logging.dumpRequests`（需 `verbosity=diagnostic`），导出完整模型请求用于隐私检查。
+- 新增主人私聊工具（默认关闭，`tools.enabled`）：`recall` 检索更早的记忆，`read_skill` 读取 `~/AliceWorkspace/skills` 中的说明书，`exec` 请求在 Mac 上执行命令。每条命令都会单独发来带【执行】【拒绝】按钮的消息，10 分钟内有效；执行结果会交回 Alice 回复。其他聊天没有任何工具。
+- 新增 `/interlude.exec [编号]` 查看命令审批记录和输出。
 
 ## 0.1.3 · 独立 Telegram 版
 

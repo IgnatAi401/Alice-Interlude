@@ -64,7 +64,7 @@ export async function start() {
       }
       if (session.isDirect) { if (config.runtime.captureDirectMessages) await service.receive(routeInbound(telegramPrivateEvent(session), { ownerChatId: env.ownerChatId })) }
       else await service.receiveGroup(session)
-    })
+    }, config.tools?.enabled ? callback => service.handleCallback(callback) : undefined)
   } finally {
     await stop()
     process.removeListener('SIGINT', signalHandler)

@@ -156,6 +156,7 @@ export const DATABASE_DATE_FIELDS: Record<string, string[]> = {
   interlude_state_patch: ['createdAt', 'appliedAt'],
   interlude_overlay_snapshot: ['periodStart', 'periodEnd', 'createdAt', 'updatedAt'],
   interlude_web_observation: ['accessedAt', 'createdAt'],
+  interlude_approval: ['createdAt', 'requestedAt', 'expiresAt', 'decidedAt', 'finishedAt'],
 }
 
 /** Memory tables whose rows carry an audience label (roadmap §4.2). */

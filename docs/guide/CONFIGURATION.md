@@ -79,4 +79,15 @@
 - `blindMode.enabled`：关闭管理命令及业务日志，仅保留周期健康心跳；恢复需要改配置并重启。
 - `browser.enabled`：可选本机 Chrome 网页观察，默认关闭。其它浏览参数控制域名、超时、页数和文本预算。
 
-这些参数的完整字段定义位于 `src/service.ts`；通常保留默认值即可。
+## 工具（仅主人私聊）
+
+`tools.enabled` 默认 `false`。开启后，只有主人私聊的消息回合（以及命令结果回来的那一轮）能使用工具，其他私聊、群聊和后台推进都没有工具。
+
+- `recall`：在全部记忆里全文检索更早的细节，最多返回 `tools.recall.maxResults` 条（默认 8）。
+- `read_skill`：读取 `tools.skills.dir`（默认 `~/AliceWorkspace/skills`）下 `<名字>/SKILL.md` 的全文。每个 `SKILL.md` 开头写 `name:` 和 `description:`（`---` 包围），索引会放进提示词。
+- `exec`：请求执行一条 shell 命令。Alice 回复后，Bot 会另发一条消息显示命令全文和理由，带【执行】【拒绝】按钮；只有主人本人在私聊里点击、且在 `tools.exec.approvalTtlMinutes`（默认 10 分钟）内才会执行，重复点击只执行一次。命令用 `/bin/zsh -c` 在 `tools.exec.workdir`（默认 `~/AliceWorkspace`）运行，超时 `timeoutSeconds`（默认 60 秒），输出截断到 `maxOutputChars`（默认 8000 字），同时最多 `maxPending`（默认 3）条待审批。子进程只继承 `PATH`、`HOME`、`LANG` 等少数环境变量，拿不到 token 和 API key。读网页也通过这里的 `curl` 完成。
+- `tools.maxSteps`：一轮里最多几次工具往返，默认 6。
+
+命令确实会在你的电脑上运行，点【执行】前请看清命令全文；含 `sudo` 的命令会有醒目提示。
+
+这些参数的完整字段定义位于 `src/config.ts`；通常保留默认值即可。

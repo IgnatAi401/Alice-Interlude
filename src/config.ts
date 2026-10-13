@@ -18,6 +18,19 @@ export interface Config {
   telegram?: TelegramConfig
   alterSystem?: AlterSystemConfig
   agency?: AgencyConfig
+  /** Native tool use (roadmap §3); off by default. */
+  tools?: ToolsConfig
+}
+
+export interface ToolsConfig {
+  /** Master switch for tool use in owner private-chat turns. */
+  enabled: boolean
+  /** Model requests per turn before the loop forces a final answer. */
+  maxSteps: number
+  recall: { maxResults: number }
+  skills: { dir: string; maxChars: number }
+  /** Every command waits for the owner's tap (roadmap §3.5). */
+  exec: { workdir: string; timeoutSeconds: number; maxOutputChars: number; approvalTtlMinutes: number; maxPending: number }
 }
 
 export interface BlindModeConfig {
@@ -306,6 +319,9 @@ export const DEFAULT_CONFIG: Config = {
     maxConcurrentPages: 1, maxResearchPerSweep: 1, navigationTimeout: 20_000, waitUntil: 'domcontentloaded',
     maxTextCharacters: 20_000, maxExcerptCharacters: 4000, maxObservationsInPrompt: 3, cacheMinutes: 60,
     allowGroupTriggeredResearch: false, logObservationPreview: false },
+  tools: { enabled: false, maxSteps: 6, recall: { maxResults: 8 },
+    skills: { dir: '~/AliceWorkspace/skills', maxChars: 20_000 },
+    exec: { workdir: '~/AliceWorkspace', timeoutSeconds: 60, maxOutputChars: 8_000, approvalTtlMinutes: 10, maxPending: 3 } },
   logging: { level: 'info', verbosity: 'standard', format: 'layered', colors: true, colorTheme: 'dark', kaomoji: true,
     logScriptPreview: false, logMessageContent: false, dumpRequests: false, previewLength: 500 },
 }
@@ -362,6 +378,14 @@ export function resolveConfig(input: unknown): Config {
     || !['dark', 'light'].includes(config.logging.colorTheme ?? 'dark')) throw new Error('logging 配置无效。')
   if (config.browser && (!['deferred-only', 'allow-immediate'].includes(config.browser.mode)
     || !['domcontentloaded', 'networkidle2'].includes(config.browser.waitUntil))) throw new Error('browser 配置无效。')
+  const tools = config.tools!
+  for (const value of [tools.maxSteps, tools.recall.maxResults, tools.skills.maxChars, tools.exec.timeoutSeconds,
+    tools.exec.maxOutputChars, tools.exec.approvalTtlMinutes, tools.exec.maxPending]) {
+    if (!Number.isInteger(value) || value < 1) throw new Error('tools 中的步数、条数、字数、秒数和分钟数必须是正整数。')
+  }
+  if (tools.maxSteps > 20 || tools.exec.timeoutSeconds > 600 || tools.exec.approvalTtlMinutes > 1440 || tools.exec.maxPending > 10) {
+    throw new Error('tools.maxSteps 最大 20，exec.timeoutSeconds 最大 600，exec.approvalTtlMinutes 最大 1440，exec.maxPending 最大 10。')
+  }
   if (config.runtime.conversationFollowUpMinutes?.some(value => typeof value !== 'number' || !Number.isFinite(value) || value <= 0)) throw new Error('conversationFollowUpMinutes 必须是正数数组。')
   config.runtime.restWindows = (config.runtime.restWindows ?? []).map(window => {
     const row = mergeDefaults(DEFAULT_CONFIG.runtime.restWindows![0], window, 'runtime.restWindows')

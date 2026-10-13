@@ -4,6 +4,11 @@ import { tierAllowsTool, type Tier } from '../router/tiers'
 export interface ToolContext {
   tier: Tier
   participantKey?: string
+  /** Database id of the turn's participant; exec files its approval under it. */
+  participantId?: string
+  storyId?: string
+  /** One id per turn, so side effects of a discarded turn can be cancelled. */
+  turnId?: string
   signal?: AbortSignal
 }
 
@@ -16,6 +21,8 @@ export interface ToolDefinition {
 
 export interface Tool extends ToolDefinition {
   run(input: unknown, ctx: ToolContext): Promise<string>
+  /** One short, non-secret phrase for the tool-activity script entry (roadmap §3.6). */
+  describe?(input: unknown): string
 }
 
 /** Shape of an Anthropic `tool_result` content block, minus tool_use_id which the loop adds. */
@@ -48,6 +55,10 @@ export class ToolRegistry {
       .filter(tool => tierAllowsTool(tier, tool.name))
       .sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0)
       .map(({ name, description, input_schema }) => ({ name, description, input_schema }))
+  }
+
+  describe(name: string, input: unknown) {
+    try { return this.tools.get(name)?.describe?.(input) || name } catch { return name }
   }
 
   async execute(name: string, input: unknown, ctx: ToolContext): Promise<ToolResult> {

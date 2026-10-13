@@ -1,4 +1,5 @@
 import type { Audience, ClassifiedAudience } from './memory/audience'
+import type { TurnTools } from './capabilities/loop'
 
 export type StoryStatus = 'active' | 'paused' | 'archived'
 
@@ -527,7 +528,8 @@ export interface GroupContext {
 
 
 export interface NarrativeProvider {
-  decide(request: NarrativeRequest): Promise<NarrativeDecision>
+  /** tools is present only for turns whose tier allows tools (capabilities/loop.ts). */
+  decide(request: NarrativeRequest, tools?: TurnTools): Promise<NarrativeDecision>
   /** A low-frequency side analysis; absent providers leave the trigger pending. */
   analyzeAlter?(request: AlterAnalysisRequest, config: AlterSystemConfig): Promise<AlterAnalysisDecision>
 }

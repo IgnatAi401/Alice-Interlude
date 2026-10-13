@@ -16,7 +16,15 @@ Anthropic 接收当前叙事需要的角色设定、连续性记录和消息；�
 
 管理命令只在 owner 私聊中执行：入口处先拦截（非 owner 不回复），命令内部再检查一次。
 
-工具注册表（`src/capabilities/registry.ts`）有两道检查：构造请求时只暴露当前等级允许的工具；执行前按 `TIER_TOOLS` 能力表再次检查等级，未注册或等级不允许的工具返回错误结果且不执行。能力表为 owner：`exec`、`read_skill`、`recall`、`web_fetch`；public：`web_fetch`；system：无。目前尚未注册任何工具。
+工具注册表（`src/capabilities/registry.ts`）有两道检查：构造请求时只暴露当前等级允许的工具；执行前按 `TIER_TOOLS` 能力表再次检查等级，未注册或等级不允许的工具返回错误结果且不执行。能力表为 owner：`exec`、`read_skill`、`recall`；public 与 system：无。工具只在主人私聊的消息回合和命令结果回合提供（`tools.enabled`，默认关闭），回合的等级来自事件，不来自模型输出。
+
+不做 `web_fetch`：本机代理使用假 IP 模式（所有域名解析到 `198.18.0.0/15`），程序无法检查真实目标地址。读网页只能经审批的 `exec` 运行 `curl`。
+
+- `recall` 通过 `memory/store.ts` 按调用者的读者读取；结果中的访客记录放在 `<visitor_notes>` 内。
+- `read_skill` 只接受索引中的名字，不接受路径。
+- `exec` 本身不执行任何东西，只建一条审批（`interlude_approval`）。回合被新消息作废或失败时，审批作废，不会发出。回合送达后才发出带按钮的消息。回调必须来自主人私聊、点击者是主人本人、按钮所在消息与审批记录一致、审批为 pending 且未过期；状态更新以“当前仍为 pending”为条件，在单一写队列中执行，重复点击只会执行一次（S7）。子进程在独立进程组运行，只继承 `PATH`、`HOME`、`USER`、`LOGNAME`、`LANG`、`LC_*`、`TMPDIR`、`TZ`（S8）；`zsh` 仍会读取 `~/.zshenv`，不要在其中写秘密。
+- 命令输出只存在审批表中；结果以 `tool-result` 意图交回时不含输出，组装提示词时才从审批表读入，并包装在 `<command_output>` 内作为数据。剧本里只写一行 private 的 `tool-activity` 摘要。日志只记工具名、耗时、结果长度和退出码，不记输出。
+- 启动时，上次运行留下的未发出请求作废，执行中被打断的命令标为 interrupted 并告知 Alice。
 
 ## 记忆受众
 

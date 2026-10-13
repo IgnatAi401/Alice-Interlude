@@ -8,11 +8,11 @@ export type InboundTier = Exclude<Tier, 'system'>
 /**
  * Fixed capability table. A tool must be both registered and listed here for
  * the tier, so a newly registered tool is unavailable until this table names it.
- * system 默认没有工具；频道发帖回合以后单独放开 web_fetch。
+ * 不做 web_fetch（2026-10-13 决定）：主人回合上网走 exec + curl，public 与 system 没有工具。
  */
 export const TIER_TOOLS: Readonly<Record<Tier, readonly string[]>> = {
-  owner: ['exec', 'read_skill', 'recall', 'web_fetch'],
-  public: ['web_fetch'],
+  owner: ['exec', 'read_skill', 'recall'],
+  public: [],
   system: [],
 }
 

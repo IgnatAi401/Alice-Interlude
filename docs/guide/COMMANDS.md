@@ -26,6 +26,7 @@
 | `/interlude.memory.consolidate` | 立即执行一次每晚记忆整理（需确认） |
 | `/interlude.memory.visitors` | 最近的访客（其他私聊、群聊） |
 | `/interlude.memory.visitor <标识>` | 某个访客的记录；标识形如 `tg:123`、`tg-group:-100123` |
+| `/interlude.exec [编号]` | 查看最近的命令审批；带编号时显示命令全文和输出 |
 | `/interlude.memory.intents [条数]` | 查看待执行计划 |
 | `/interlude.memory.cancel <编号>` | 取消计划或延迟消息 |
 | `/interlude.memory.patches [条数]` | 查看设定变化提案 |

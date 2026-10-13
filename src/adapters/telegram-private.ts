@@ -1,6 +1,6 @@
 import type { MessageSession as Session } from '../runtime'
 import { setTimeout as delay } from 'node:timers/promises'
-import type { BotTransport } from '../runtime'
+import type { BotTransport, InlineButton } from '../runtime'
 import type { Storage } from '../database'
 import type { AdapterInboundEvent } from '../router/events'
 
@@ -67,7 +67,28 @@ interface TelegramMessage {
   audio?: unknown
   reply_to_message?: { from?: { id: number } }
 }
-interface Update { update_id: number; message?: TelegramMessage }
+interface TelegramCallbackQuery {
+  id: string
+  from: { id: number; is_bot?: boolean }
+  message?: { message_id: number; chat: { id: number; type: string } }
+  data?: string
+}
+interface Update { update_id: number; message?: TelegramMessage; callback_query?: TelegramCallbackQuery }
+
+/**
+ * An inline-button tap from a whitelisted chat. The adapter only checks the
+ * whitelist; what a tap may do (and who may do it) is decided by the handler.
+ */
+export interface TelegramCallback {
+  chatId: string
+  chatType: string
+  fromId: string
+  messageId: string
+  data: string
+  /** answerCallbackQuery: clears the button's loading state, optionally with a short toast. */
+  answer(text?: string): Promise<void>
+}
+export type CallbackHandler = (callback: TelegramCallback) => Promise<void>
 
 /** Telegram API failure; retryAfter is set when Telegram asks the client to slow down (HTTP 429). */
 export class TelegramApiError extends Error {
@@ -136,6 +157,37 @@ export class TelegramBot implements BotTransport {
 
   sendPrivateMessage(chatId: string, content: string) { return this.sendMessage(chatId, content) }
 
+  async sendInlinePrompt(chatId: string, content: string, buttons: InlineButton[]) {
+    if (!this.env.chatIds.has(chatId)) throw new Error('投递目标不在 TELEGRAM_CHAT_IDS 白名单内。')
+    const result = await this.api<{ message_id: number }>('sendMessage', {
+      chat_id: chatId, text: content.slice(0, 4096),
+      reply_markup: { inline_keyboard: [buttons.map(button => ({ text: button.text, callback_data: button.data }))] },
+    })
+    return String(result.message_id)
+  }
+
+  /** editMessageText without reply_markup also removes the inline keyboard. */
+  async closeInlinePrompt(chatId: string, messageId: string, content: string) {
+    if (!this.env.chatIds.has(chatId)) throw new Error('投递目标不在 TELEGRAM_CHAT_IDS 白名单内。')
+    await this.api('editMessageText', { chat_id: chatId, message_id: Number(messageId), text: content.slice(0, 4096) })
+  }
+
+  private async handleCallback(query: TelegramCallbackQuery, handle?: CallbackHandler) {
+    const answer = async (text?: string) => {
+      await this.api('answerCallbackQuery', { callback_query_id: query.id, ...(text ? { text: text.slice(0, 200) } : {}) }).catch(() => undefined)
+    }
+    const message = query.message
+    // Taps from chats outside the whitelist get no handler and no information.
+    if (!handle || !message || query.from.is_bot || !this.env.chatIds.has(String(message.chat.id)) || typeof query.data !== 'string') {
+      await answer()
+      return
+    }
+    await handle({
+      chatId: String(message.chat.id), chatType: message.chat.type, fromId: String(query.from.id),
+      messageId: String(message.message_id), data: query.data, answer,
+    })
+  }
+
   private prompt(chatId: string, userId: string, timeout: number) {
     const key = `${chatId}:${userId}`
     const previous = this.prompts.get(key)
@@ -146,7 +198,8 @@ export class TelegramBot implements BotTransport {
     })
   }
 
-  async handleUpdate(update: Update, handle: (session: Session) => Promise<void>) {
+  async handleUpdate(update: Update, handle: (session: Session) => Promise<void>, onCallback?: CallbackHandler) {
+    if (update.callback_query) return this.handleCallback(update.callback_query, onCallback)
     const message = update.message
     // Reject before downloading files, creating a session, or exposing data to a model.
     if (!message?.from || message.from.is_bot || !this.env.chatIds.has(String(message.chat.id))) return
@@ -196,7 +249,7 @@ export class TelegramBot implements BotTransport {
     await handle(session)
   }
 
-  async run(handle: (session: Session) => Promise<void>) {
+  async run(handle: (session: Session) => Promise<void>, onCallback?: CallbackHandler) {
     const me = await this.api<{ id: number; username: string }>('getMe', {})
     if (String(me.id) !== this.selfId) throw new Error('Telegram bot 身份不匹配。')
     this.username = me.username
@@ -211,11 +264,13 @@ export class TelegramBot implements BotTransport {
     }
     while (!this.controller.signal.aborted) {
       try {
-        const updates = await this.api<Update[]>('getUpdates', { offset, timeout: 25, allowed_updates: ['message'] })
+        const updates = await this.api<Update[]>('getUpdates', {
+          offset, timeout: 25, allowed_updates: onCallback ? ['message', 'callback_query'] : ['message'],
+        })
         for (const update of updates) {
           if (this.controller.signal.aborted) break
           try {
-            await this.handleUpdate(update, handle)
+            await this.handleUpdate(update, handle, onCallback)
           } catch (error) {
             if (this.controller.signal.aborted) throw error
             failures.count = failures.updateId === update.update_id ? failures.count + 1 : 1
