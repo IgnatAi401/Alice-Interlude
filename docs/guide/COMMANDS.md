@@ -18,7 +18,12 @@
 | `/interlude.script.note <正文>` | 写入管理员注记 |
 | `/interlude.memory.facts [条数]` | 查看长期事实及编号 |
 | `/interlude.memory.add <scope> <正文>` | 添加事实；scope 为 character/world/relationship/event/promise |
-| `/interlude.memory.forget <编号>` | 将事实标为失效 |
+| `/interlude.memory.search <词>` | 全文搜索事实和剧本条目 |
+| `/interlude.memory.public <编号>` | 把记录设为公开（访客和频道可见） |
+| `/interlude.memory.private <编号>` | 把记录设为私密（只有主人回合可见） |
+| `/interlude.memory.forget <编号>` | 事实、记忆标为失效；剧本条目替换为占位符（需确认） |
+| `/interlude.memory.visitors` | 最近的访客（其他私聊、群聊） |
+| `/interlude.memory.visitor <标识>` | 某个访客的记录；标识形如 `tg:123`、`tg-group:-100123` |
 | `/interlude.memory.intents [条数]` | 查看待执行计划 |
 | `/interlude.memory.cancel <编号>` | 取消计划或延迟消息 |
 | `/interlude.memory.patches [条数]` | 查看设定变化提案 |
@@ -29,5 +34,7 @@
 | `/interlude.purge.range <起始ISO时间> <结束ISO时间>` | 删除时间范围内的数据 |
 | `/interlude.purge.all` | 清理历史并按当前配置重建初始设定 |
 | `/interlude.database.clear` | 清空本地叙事数据 |
+
+**记录编号**：`f12` 是事实（纯数字 `12` 或 `#12` 也按事实处理），`e34` 是剧本条目，`m5` 是记忆。列表中的标记：🔒 私密、🌐 公开、👤 某个访客。访客记录的受众由程序固定，不能用 public/private 修改。
 
 方括号表示可选参数，不需要把括号发给 Bot。涉及大范围删除的命令会要求 60 秒内回复 `y` 或 `n`；这是运行中的数据操作确认。

@@ -12,8 +12,8 @@ import { AUDIENCE_TABLES, isTransientDatabaseError, mergeParticipantState, merge
 import { TelegramEnvironment, isAllowedTelegramSession, readTelegramEnvironment, telegramChatId } from './adapters/telegram-private'
 import type { InboundEvent, ReplyHandle } from './router/events'
 import { resolveTier } from './router/tiers'
-import { Audience, Viewer, derivedAudience, normalizeAudience, visitorAudience } from './memory/audience'
-import { MemoryStore, OWNER_VIEWER } from './memory/store'
+import { Audience, ClassifiedAudience, Viewer, derivedAudience, normalizeAudience, visitorAudience } from './memory/audience'
+import { MEMORY_REF_TABLES, MemoryRef, MemoryStore, OWNER_VIEWER } from './memory/store'
 import { ownerNarrativeRequest } from './context/owner'
 import { publicNarrativeRequest } from './context/public'
 import { resolve } from 'node:path'
@@ -480,12 +480,82 @@ export class InterludeService {
     return true
   }
 
-  /** Reversible deletion: facts are retained as superseded rows for audit. */
-  async forgetAdminFact(storyId: string, id: number) {
-    const fact = (await this.store.rows(OWNER_VIEWER, 'interlude_fact', { id, storyId, status: 'active' }))[0]
-    if (!fact) return false
-    await this.dbSet('interlude_fact', { id }, { status: 'superseded', updatedAt: new Date() })
+  /** A record addressed by an owner command; superseded facts and memories are not addressable. */
+  async adminRecord(storyId: string, ref: MemoryRef): Promise<{ audience: Audience; content: string } | undefined> {
+    const query = ref.kind === 'entry' ? { id: ref.id, storyId } : { id: ref.id, storyId, status: 'active' }
+    return (await this.store.rows(OWNER_VIEWER, MEMORY_REF_TABLES[ref.kind], query))[0]
+  }
+
+  /**
+   * Owner correction of a record's audience (roadmap §4.3, §4.9). Visitor
+   * records keep their host-assigned audience so one visitor's words never
+   * reach another (S5).
+   */
+  async setAdminAudience(storyId: string, ref: MemoryRef, audience: ClassifiedAudience): Promise<'changed' | 'unchanged' | 'not-found' | 'visitor'> {
+    const record = await this.adminRecord(storyId, ref)
+    if (!record) return 'not-found'
+    const current = normalizeAudience(record.audience)
+    if (current.startsWith('visitor:')) return 'visitor'
+    if (current === audience) return 'unchanged'
+    await this.dbSet(MEMORY_REF_TABLES[ref.kind], { id: ref.id }, { audience })
+    return 'changed'
+  }
+
+  /**
+   * Facts and memories are kept as superseded rows for audit. Script entries
+   * have no status, so their content is replaced with a placeholder like a
+   * range purge; this cannot be undone.
+   */
+  async forgetAdminRecord(storyId: string, ref: MemoryRef) {
+    const record = await this.adminRecord(storyId, ref)
+    if (!record) return false
+    if (ref.kind === 'entry') {
+      this.invalidateBufferedNarratives(storyId)
+      await this.dbSet('interlude_script_entry', { id: ref.id }, {
+        kind: 'redacted', actor: 'system', content: '[管理员已删除剧本内容]', metadata: { redacted: true },
+      })
+    } else await this.dbSet(MEMORY_REF_TABLES[ref.kind], { id: ref.id }, { status: 'superseded', updatedAt: new Date() })
     return true
+  }
+
+  async adminSearch(storyId: string, text: string, limit = 8) {
+    const [facts, entries] = await Promise.all([
+      this.store.search<NarrativeFact>(OWNER_VIEWER, 'fact', storyId, text, limit, { status: 'active' }),
+      this.store.search<ScriptEntry>(OWNER_VIEWER, 'entry', storyId, text, limit),
+    ])
+    return { facts, entries }
+  }
+
+  /** Visitors (other chats and groups) seen in the most recent script entries, newest first. */
+  async adminVisitors(storyId: string, window = 1000) {
+    const entries = await this.store.rows<ScriptEntry>(OWNER_VIEWER, 'interlude_script_entry', { storyId }, {
+      limit: window, sort: { occurredAt: 'desc' },
+    })
+    const visitors = new Map<string, { key: string; count: number; last: ScriptEntry }>()
+    for (const entry of entries) {
+      const audience = normalizeAudience(entry.audience)
+      if (!audience.startsWith('visitor:')) continue
+      const key = audience.slice('visitor:'.length)
+      const seen = visitors.get(key)
+      if (seen) seen.count++
+      else visitors.set(key, { key, count: 1, last: entry })
+    }
+    const participants = await this.participants(storyId, true)
+    return [...visitors.values()].map(visitor => ({
+      ...visitor,
+      displayName: participants.find(participant => visitor.key === `tg:${participant.userId}`)?.displayName,
+    }))
+  }
+
+  /** One visitor's own records; undefined for a malformed key (it would otherwise normalize to private). */
+  async adminVisitor(storyId: string, key: string, limit = 15) {
+    const audience = visitorAudience(key.trim().replace(/^visitor:/, ''))
+    if (audience === 'private') return undefined
+    const [entries, facts] = await Promise.all([
+      this.store.rows<ScriptEntry>(OWNER_VIEWER, 'interlude_script_entry', { storyId, audience }, { limit, sort: { occurredAt: 'desc' } }),
+      this.store.rows<NarrativeFact>(OWNER_VIEWER, 'interlude_fact', { storyId, audience, status: 'active' }, { limit: 10, sort: { updatedAt: 'desc' } }),
+    ])
+    return { audience, entries: entries.reverse(), facts }
   }
 
   async cancelAdminIntent(storyId: string, id: number) {

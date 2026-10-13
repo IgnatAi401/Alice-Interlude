@@ -1,3 +1,5 @@
+import { normalizeAudience } from './memory/audience'
+import type { MemoryRef } from './memory/store'
 import { Runtime, MessageSession as Session } from './runtime'
 import { InterludeService } from './service'
 import { StorySetting } from './types'
@@ -102,7 +104,7 @@ export function registerCommands(ctx: Runtime, service: InterludeService) {
       const participant = await service.findParticipant(session, story)
       const memories = await service.memories(story.id, Math.max(1, Math.min(limit, 30)), participant?.id)
       if (!memories.length) return '暂时还没有提取出耐久记忆；多进行一些对话并等待后台整理后再看。'
-      return memories.map(memory => `[${memory.category}/${memory.importance.toFixed(2)}] ${memory.content}`).join('\n')
+      return memories.map(memory => `m${memory.id} ${audienceMark(memory.audience)} [${memory.category}/${memory.importance.toFixed(2)}] ${memory.content}`).join('\n')
     })
 
   ctx.command('interlude.context', '查看场景摘要、剧情弧线、人物变化覆写和长期事实')
@@ -142,7 +144,7 @@ export function registerCommands(ctx: Runtime, service: InterludeService) {
       if (typeof story === 'string') return story
       const entries = await service.recentEntries(story.id, Math.max(1, Math.min(limit, 50)))
       if (!entries.length) return '当前主剧本还没有原始条目。'
-      return entries.map(entry => `#${entry.id} [${entry.occurredAt.toISOString()}] ${entry.actor}/${entry.kind}${entry.participantId ? `/${entry.participantId}` : ''}\n${entry.content}`).join('\n\n')
+      return entries.map(entry => `e${entry.id} ${audienceMark(entry.audience)} [${entry.occurredAt.toISOString()}] ${entry.actor}/${entry.kind}${entry.participantId ? `/${entry.participantId}` : ''}\n${entry.content}`).join('\n\n')
     })
 
   ctx.command('interlude.script.note <content:text>', '管理员：向剧本写入一条人工注记，不伪装成模型输出')
@@ -160,7 +162,7 @@ export function registerCommands(ctx: Runtime, service: InterludeService) {
       if (typeof story === 'string') return story
       const facts = await service.adminFacts(story.id, limit)
       if (!facts.length) return '当前没有有效的长期事实。'
-      return facts.map(fact => `#${fact.id} [${fact.scope}] 重要度=${fact.importance.toFixed(2)} 置信度=${fact.confidence.toFixed(2)} 未解决=${fact.unresolved}\n${fact.content}`).join('\n\n')
+      return facts.map(fact => `f${fact.id} ${audienceMark(fact.audience)} [${fact.scope}] 重要度=${fact.importance.toFixed(2)} 置信度=${fact.confidence.toFixed(2)} 未解决=${fact.unresolved}\n${fact.content}`).join('\n\n')
     })
 
   ctx.command('interlude.memory.add <scope:string> <content:text>', '管理员：手动添加长期事实；scope 为 character/world/relationship/event/promise')
@@ -172,12 +174,80 @@ export function registerCommands(ctx: Runtime, service: InterludeService) {
       return await service.addAdminFact(story, scope, content) ? '已添加高置信度长期事实。' : '事实内容为空，未添加。'
     })
 
-  ctx.command('interlude.memory.forget <id:number>', '管理员：将指定长期事实标记为已失效，可审计且不会物理删除')
-    .action(async ({ session = missingSession() }, id) => {
+  ctx.command('interlude.memory.forget <ref:string>', '管理员：删除一条记录；f12 事实、m5 记忆标为失效，e34 剧本条目替换为占位符（会询问 y/n）')
+    .action(async ({ session = missingSession() }, refText) => {
+      if (!requireManager(service, session)) return '当前 Telegram 聊天没有管理权限。'
+      const ref = parseMemoryRef(refText)
+      if (!ref) return MEMORY_REF_HELP
+      const story = await requireStory(service, session)
+      if (typeof story === 'string') return story
+      const label = formatMemoryRef(ref)
+      if (ref.kind === 'entry') {
+        const entry = await service.adminRecord(story.id, ref)
+        if (!entry) return `未找到 ${label}。`
+        if (!await askConfirmation(session, `即将把剧本条目 ${label} 替换为占位符，无法恢复：\n${clip(entry.content, 200)}\n确认执行吗？(y/n)`)) return '操作已取消。'
+      }
+      return await service.forgetAdminRecord(story.id, ref) ? `${label} 已删除（事实和记忆保留为失效记录）。` : `未找到有效的 ${label}。`
+    })
+
+  ctx.command('interlude.memory.search <query:text>', '管理员：全文搜索长期事实和剧本条目')
+    .action(async ({ session = missingSession() }, query) => {
+      if (!requireManager(service, session)) return '当前 Telegram 聊天没有管理权限。'
+      if (!query?.trim()) return '请提供搜索词，例如 /interlude.memory.search 樱花'
+      const story = await requireStory(service, session)
+      if (typeof story === 'string') return story
+      const { facts, entries } = await service.adminSearch(story.id, query)
+      if (!facts.length && !entries.length) return '没有找到匹配的记录。'
+      return [
+        ...facts.map(fact => `f${fact.id} ${audienceMark(fact.audience)} [${fact.scope}] ${clip(fact.content, 200)}`),
+        ...entries.map(entry => `e${entry.id} ${audienceMark(entry.audience)} [${entry.occurredAt.toISOString()}] ${entry.actor}/${entry.kind}: ${clip(entry.content, 200)}`),
+      ].join('\n\n')
+    })
+
+  for (const audience of ['public', 'private'] as const) {
+    const verb = audience === 'public' ? '公开（访客和频道可见）' : '设为私密（只有主人回合可见）'
+    ctx.command(`interlude.memory.${audience} <ref:string>`, `管理员：把一条记录${verb}；f12 事实、e34 剧本条目、m5 记忆`)
+      .action(async ({ session = missingSession() }, refText) => {
+        if (!requireManager(service, session)) return '当前 Telegram 聊天没有管理权限。'
+        const ref = parseMemoryRef(refText)
+        if (!ref) return MEMORY_REF_HELP
+        const story = await requireStory(service, session)
+        if (typeof story === 'string') return story
+        const label = formatMemoryRef(ref)
+        const result = await service.setAdminAudience(story.id, ref, audience)
+        if (result === 'not-found') return `未找到有效的 ${label}。`
+        if (result === 'visitor') return `${label} 属于访客，受众由程序固定，不能修改；如需删除请用 /interlude.memory.forget。`
+        if (result === 'unchanged') return `${label} 已经是 ${audienceMark(audience)}。`
+        const note = audience === 'public' && ref.kind === 'entry' ? '原文会出现在访客和频道回合的上下文中。' : ''
+        return `${label} 已改为 ${audienceMark(audience)}。${note}`
+      })
+  }
+
+  ctx.command('interlude.memory.visitors', '管理员：查看最近的访客（其他私聊和群聊）')
+    .action(async ({ session = missingSession() }) => {
       if (!requireManager(service, session)) return '当前 Telegram 聊天没有管理权限。'
       const story = await requireStory(service, session)
       if (typeof story === 'string') return story
-      return await service.forgetAdminFact(story.id, id) ? `长期事实 #${id} 已标记为失效。` : `未找到有效的长期事实 #${id}。`
+      const visitors = await service.adminVisitors(story.id)
+      if (!visitors.length) return '最近的剧本中没有访客记录。'
+      return visitors.map(visitor => [
+        `👤${visitor.key}${visitor.displayName ? `（${visitor.displayName}）` : ''} 近期 ${visitor.count} 条，最后 ${visitor.last.occurredAt.toISOString()}`,
+        `  ${visitor.last.actor}: ${clip(visitor.last.content, 120)}`,
+      ].join('\n')).join('\n\n')
+    })
+
+  ctx.command('interlude.memory.visitor <key:string>', '管理员：查看某个访客的记录；key 形如 tg:123 或 tg-group:-100123')
+    .action(async ({ session = missingSession() }, key) => {
+      if (!requireManager(service, session)) return '当前 Telegram 聊天没有管理权限。'
+      const story = await requireStory(service, session)
+      if (typeof story === 'string') return story
+      const records = key ? await service.adminVisitor(story.id, key) : undefined
+      if (!records) return '访客标识无效，应形如 tg:123 或 tg-group:-100123（可用 /interlude.memory.visitors 查看）。'
+      if (!records.entries.length && !records.facts.length) return `没有 ${records.audience} 的记录。`
+      return [
+        ...records.entries.map(entry => `e${entry.id} [${entry.occurredAt.toISOString()}] ${entry.actor}/${entry.kind}: ${clip(entry.content, 200)}`),
+        ...(records.facts.length ? ['事实：', ...records.facts.map(fact => `f${fact.id} [${fact.scope}] ${clip(fact.content, 200)}`)] : []),
+      ].join('\n')
     })
 
   ctx.command('interlude.memory.intents [limit:number]', '管理员：查看等待中的计划、提醒、承诺与剧情余波')
@@ -334,6 +404,31 @@ async function changeStatus(service: InterludeService, session: Session, status:
 }
 
 function requireManager(service: InterludeService, session: Session) { return service.canManageSession(session) }
+
+const MEMORY_REF_HELP = '编号格式：f12（事实，纯数字或 #12 也算事实）、e34（剧本条目）、m5（记忆）。'
+const MEMORY_REF_KINDS = { f: 'fact', e: 'entry', m: 'memory' } as const
+
+function parseMemoryRef(text: unknown): MemoryRef | undefined {
+  const match = /^(?:#|([fem]))?(\d{1,15})$/i.exec(String(text ?? '').trim())
+  if (!match) return undefined
+  const kind = MEMORY_REF_KINDS[(match[1]?.toLowerCase() ?? 'f') as keyof typeof MEMORY_REF_KINDS]
+  return { kind, id: Number(match[2]) }
+}
+
+function formatMemoryRef(ref: MemoryRef) {
+  return `${({ fact: '事实', entry: '剧本条目', memory: '记忆' })[ref.kind]} ${ref.kind[0]}${ref.id}`
+}
+
+/** 🔒 private, 🌐 public, 👤<key> one visitor (roadmap §4.9). */
+function audienceMark(value: unknown) {
+  const audience = normalizeAudience(value)
+  return audience === 'public' ? '🌐' : audience === 'private' ? '🔒' : `👤${audience.slice('visitor:'.length)}`
+}
+
+function clip(text: string, max: number) {
+  const flat = String(text ?? '').replace(/\s+/g, ' ').trim()
+  return flat.length > max ? `${flat.slice(0, max)}…` : flat
+}
 
 function isFactScope(value: string): value is 'character' | 'world' | 'relationship' | 'event' | 'promise' {
   return ['character', 'world', 'relationship', 'event', 'promise'].includes(value)

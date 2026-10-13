@@ -19,6 +19,12 @@ export interface MemoryStoreBackend {
 /** Candidate pool taken from full-text search before audience filtering and scoring. */
 const FTS_CANDIDATES = 100
 
+const FTS_TABLES = { fact: 'interlude_fact', entry: 'interlude_script_entry' } as const satisfies Record<FtsIndex, AudienceTable>
+
+/** Tables an owner command can address by a short reference such as f12 / e34 / m5. */
+export const MEMORY_REF_TABLES = { fact: 'interlude_fact', entry: 'interlude_script_entry', memory: 'interlude_memory' } as const satisfies Record<string, AudienceTable>
+export interface MemoryRef { kind: keyof typeof MEMORY_REF_TABLES; id: number }
+
 /**
  * The single read path for memory tables (roadmap §4.5). Every read names its
  * viewer, and the audience filter runs in SQL before any limit, then again in
@@ -80,6 +86,26 @@ export class MemoryStore {
         || b.fact.id - a.fact.id)
       .slice(0, limit)
       .map(item => item.fact)
+  }
+
+  /**
+   * Plain lookup for /interlude.memory.search: bm25 order when the text is long
+   * enough for trigram search, otherwise a substring scan of recent rows.
+   */
+  async search<T = any>(viewer: Viewer, index: FtsIndex, storyId: string, text: string, limit: number, query: Record<string, unknown> = {}): Promise<T[]> {
+    const table = FTS_TABLES[index]
+    const match = buildFtsQuery(text)
+    if (!match) {
+      const needle = text.trim().toLowerCase()
+      if (!needle) return []
+      const recent = await this.rows(viewer, table, { ...query, storyId }, { limit: 1000, sort: { id: 'desc' } })
+      return recent.filter(row => String(row.content ?? '').toLowerCase().includes(needle)).slice(0, limit)
+    }
+    const hits = await this.backend.ftsSearch(index, match, FTS_CANDIDATES)
+    if (!hits.length) return []
+    const order = new Map(hits.map((hit, position) => [hit.id, position]))
+    const rows = await this.rows(viewer, table, { ...query, storyId, id: { $in: [...order.keys()] } })
+    return rows.sort((a, b) => order.get(a.id)! - order.get(b.id)!).slice(0, limit)
   }
 
   async activeScene(viewer: Viewer, storyId: string): Promise<InterludeScene | null> {

@@ -11,6 +11,7 @@
 - 长期事实检索改用 SQLite FTS5 trigram 全文索引，中文可按三字片段命中（`schema_version=2` 自动建立索引）。
 - 非主人聊天（其他私聊、群聊）改用隔离上下文：看不到 continuity、人物变化、其他参与者、全局计划和主人画像；不能给其他账号发消息或刷新 continuity。新增 `memory.publicOwnerProfile` 配置可以公开的主人信息。
 - 主人回合中的访客记录包装在 `<visitor_notes>` 中，作为引用资料而非指令。
+- 新增记忆管理命令 `/interlude.memory.search`、`.public`、`.private`、`.visitors`、`.visitor`；`.forget` 支持事实、剧本条目和记忆；列表显示 `f/e/m` 编号与 🔒/🌐/👤 受众标记。
 - 新增调试开关 `logging.dumpRequests`（需 `verbosity=diagnostic`），导出完整模型请求用于隐私检查。
 
 ## 0.1.3 · 独立 Telegram 版
