@@ -197,20 +197,6 @@ export interface ScriptEntry {
   createdAt: Date
 }
 
-export interface NarrativeMemory {
-  id: number
-  storyId: string
-  participantId: string
-  category: string
-  content: string
-  importance: number
-  status: string
-  sourceEntryId: number | null
-  audience: Audience
-  createdAt: Date
-  updatedAt: Date
-}
-
 export type SceneStatus = 'active' | 'closed'
 
 export interface InterludeScene {
@@ -488,7 +474,6 @@ export interface NarrativeRequest {
   activeConsequences: NarrativeIntent[]
   supersededIntents: NarrativeIntent[]
   recentEntries: ScriptEntry[]
-  memories: NarrativeMemory[]
   sceneContext?: SceneContext
   facts?: NarrativeFact[]
   /** Older setting evolution, separated from the live three-day overlay. */
@@ -513,7 +498,7 @@ export interface NarrativeRequest {
 
 export interface VisitorNote {
   audience: string
-  source: 'script' | 'memory' | 'fact' | 'overlay'
+  source: 'script' | 'fact' | 'overlay'
   kind: string
   content: string
   occurredAt: string

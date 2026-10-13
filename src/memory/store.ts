@@ -2,7 +2,7 @@ import type { MemoryConfig } from '../config'
 import type { FtsIndex } from '../database'
 import { factScore } from '../memory-helpers'
 import type { AUDIENCE_TABLES } from '../state'
-import type { InterludeArc, InterludeScene, NarrativeFact, NarrativeMemory, ScriptEntry } from '../types'
+import type { InterludeArc, InterludeScene, NarrativeFact, ScriptEntry } from '../types'
 import { audienceFilter, visibleTo, type Viewer } from './audience'
 import { buildFtsQuery } from './fts'
 
@@ -21,8 +21,8 @@ const FTS_CANDIDATES = 100
 
 const FTS_TABLES = { fact: 'interlude_fact', entry: 'interlude_script_entry' } as const satisfies Record<FtsIndex, AudienceTable>
 
-/** Tables an owner command can address by a short reference such as f12 / e34 / m5. */
-export const MEMORY_REF_TABLES = { fact: 'interlude_fact', entry: 'interlude_script_entry', memory: 'interlude_memory' } as const satisfies Record<string, AudienceTable>
+/** Tables an owner command can address by a short reference such as f12 / e34. */
+export const MEMORY_REF_TABLES = { fact: 'interlude_fact', entry: 'interlude_script_entry' } as const satisfies Record<string, AudienceTable>
 export interface MemoryRef { kind: keyof typeof MEMORY_REF_TABLES; id: number }
 
 /**
@@ -46,16 +46,6 @@ export class MemoryStore {
       limit: Math.max(1, Math.min(limit, 200)), sort: { occurredAt: 'desc' },
     })
     return rows.reverse()
-  }
-
-  async memories(viewer: Viewer, storyId: string, limit: number, participantId?: string): Promise<NarrativeMemory[]> {
-    const rows = await this.rows<NarrativeMemory>(viewer, 'interlude_memory', { storyId, status: 'active' }, {
-      limit: Math.max(1, Math.min(limit * 4, 500)), sort: { importance: 'desc', updatedAt: 'desc' },
-    })
-    return rows
-      .filter(memory => participantId === undefined || !memory.participantId || memory.participantId === participantId)
-      .sort((a, b) => b.importance - a.importance || b.updatedAt.getTime() - a.updatedAt.getTime())
-      .slice(0, limit)
   }
 
   /** Visible facts ranked by quality, recency and (when the query is long enough) bm25 relevance. */

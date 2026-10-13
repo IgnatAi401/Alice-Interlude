@@ -10,7 +10,7 @@
 | `/interlude.pause`、`/interlude.resume` | 暂停、恢复处理 |
 | `/interlude.advance` | 补写生活到现在 |
 | `/interlude.timeline [条数]` | 查看近期记录 |
-| `/interlude.memory [条数]` | 查看叙事记忆 |
+| `/interlude.memory [条数]` | 查看与当前私聊最相关的长期事实 |
 | `/interlude.context` | 场景、长期事实与人物变化 |
 | `/interlude.compact` | 立即整理已发生的剧本 |
 | `/interlude.setup <JSON>` | 修改当前故事设定 |
@@ -21,7 +21,7 @@
 | `/interlude.memory.search <词>` | 全文搜索事实和剧本条目 |
 | `/interlude.memory.public <编号>` | 把记录设为公开（访客和频道可见） |
 | `/interlude.memory.private <编号>` | 把记录设为私密（只有主人回合可见） |
-| `/interlude.memory.forget <编号>` | 事实、记忆标为失效；剧本条目替换为占位符（需确认） |
+| `/interlude.memory.forget <编号>` | 事实标为失效；剧本条目替换为占位符（需确认） |
 | `/interlude.memory.visitors` | 最近的访客（其他私聊、群聊） |
 | `/interlude.memory.visitor <标识>` | 某个访客的记录；标识形如 `tg:123`、`tg-group:-100123` |
 | `/interlude.memory.intents [条数]` | 查看待执行计划 |
@@ -35,6 +35,6 @@
 | `/interlude.purge.all` | 清理历史并按当前配置重建初始设定 |
 | `/interlude.database.clear` | 清空本地叙事数据 |
 
-**记录编号**：`f12` 是事实（纯数字 `12` 或 `#12` 也按事实处理），`e34` 是剧本条目，`m5` 是记忆。列表中的标记：🔒 私密、🌐 公开、👤 某个访客。访客记录的受众由程序固定，不能用 public/private 修改。
+**记录编号**：`f12` 是事实（纯数字 `12` 或 `#12` 也按事实处理），`e34` 是剧本条目。列表中的标记：🔒 私密、🌐 公开、👤 某个访客。访客记录的受众由程序固定，不能用 public/private 修改。
 
 方括号表示可选参数，不需要把括号发给 Bot。涉及大范围删除的命令会要求 60 秒内回复 `y` 或 `n`；这是运行中的数据操作确认。

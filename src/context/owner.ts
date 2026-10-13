@@ -19,14 +19,11 @@ export function ownerNarrativeRequest(draft: NarrativeRequest): NarrativeRequest
   const recentEntries = split(draft.recentEntries, (entry, audience) => ({
     audience, source: 'script', kind: entry.kind, content: entry.content, occurredAt: entry.occurredAt.toISOString(),
   }))
-  const memories = split(draft.memories, (memory, audience) => ({
-    audience, source: 'memory', kind: memory.category, content: memory.content, occurredAt: memory.updatedAt.toISOString(),
-  }))
   const facts = split(draft.facts ?? [], (fact, audience) => ({
     audience, source: 'fact', kind: fact.scope, content: fact.content, occurredAt: fact.updatedAt.toISOString(),
   }))
   const overlaySnapshots = split(draft.overlaySnapshots ?? [], (snapshot, audience) => ({
     audience, source: 'overlay', kind: snapshot.target, content: snapshot.summary, occurredAt: snapshot.periodEnd.toISOString(),
   }))
-  return { ...draft, recentEntries, memories, facts, overlaySnapshots, visitorNotes: notes }
+  return { ...draft, recentEntries, facts, overlaySnapshots, visitorNotes: notes }
 }

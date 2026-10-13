@@ -18,7 +18,7 @@ import { ownerNarrativeRequest } from './context/owner'
 import { publicNarrativeRequest } from './context/public'
 import { resolve } from 'node:path'
 import { formatLogTime } from './time'
-import { AgencyConfig, AgencyWindowState, AlterSystemConfig, AlterSystemState, AutomaticDeliverySummary, CompactionDecision, EmotionalOffsetPrompt, FactDraft, FollowUpCommitmentDraft, FollowUpResolutionDraft, GroupContext, GroupMessageContext, IntentDraft, InterludeArc, InterludeParticipant, InterludeScene, InterludeStory, MemoryDraft, NarrativeCompactor, NarrativeDecision, NarrativeFact, NarrativeImage, NarrativeIntent, NarrativeInteraction, NarrativeProvider, NarrativeRequest, OutgoingMessageDraft, OverlaySnapshot, ParticipantState, ProactiveContactDraft, ScriptEntry, ScriptEntryDraft, StatePatchDraft, StatePatchProposal, StorySetting, StoryState, WebObservation, emptyParticipantState, emptyStorySetting, emptyStoryState } from './types'
+import { AgencyConfig, AgencyWindowState, AlterSystemConfig, AlterSystemState, AutomaticDeliverySummary, CompactionDecision, EmotionalOffsetPrompt, FactDraft, FollowUpCommitmentDraft, FollowUpResolutionDraft, GroupContext, GroupMessageContext, IntentDraft, InterludeArc, InterludeParticipant, InterludeScene, InterludeStory, NarrativeCompactor, NarrativeDecision, NarrativeFact, NarrativeImage, NarrativeIntent, NarrativeInteraction, NarrativeProvider, NarrativeRequest, OutgoingMessageDraft, OverlaySnapshot, ParticipantState, ProactiveContactDraft, ScriptEntry, ScriptEntryDraft, StatePatchDraft, StatePatchProposal, StorySetting, StoryState, WebObservation, emptyParticipantState, emptyStorySetting, emptyStoryState } from './types'
 import { clampNumber, clip, isRecord, normalizeFact, sameTimestamp, toDate } from './util'
 import { normalizeBrowserIntentDraft } from './web-policy'
 import { WebObserver } from './web-observer'
@@ -428,10 +428,6 @@ export class InterludeService {
     return this.store.recentEntries(OWNER_VIEWER, storyId, limit)
   }
 
-  async memories(storyId: string, limit = this.config.runtime.memoryLimit, participantId?: string) {
-    return this.store.memories(OWNER_VIEWER, storyId, limit, participantId)
-  }
-
   /** Administrative view: includes global and participant-specific durable facts. */
   async adminFacts(storyId: string, limit = 20) {
     return this.store.rows(OWNER_VIEWER, 'interlude_fact', { storyId, status: 'active' }, {
@@ -480,7 +476,7 @@ export class InterludeService {
     return true
   }
 
-  /** A record addressed by an owner command; superseded facts and memories are not addressable. */
+  /** A record addressed by an owner command; superseded facts are not addressable. */
   async adminRecord(storyId: string, ref: MemoryRef): Promise<{ audience: Audience; content: string } | undefined> {
     const query = ref.kind === 'entry' ? { id: ref.id, storyId } : { id: ref.id, storyId, status: 'active' }
     return (await this.store.rows(OWNER_VIEWER, MEMORY_REF_TABLES[ref.kind], query))[0]
@@ -502,7 +498,7 @@ export class InterludeService {
   }
 
   /**
-   * Facts and memories are kept as superseded rows for audit. Script entries
+   * Facts are kept as superseded rows for audit. Script entries
    * have no status, so their content is replaced with a placeholder like a
    * range purge; this cannot be undone.
    */
@@ -1552,11 +1548,10 @@ export class InterludeService {
     await this.expireActiveConsequences(story.id, now)
     const factQuery = createFactQuery(participant, userMessage, dueIntents, supersededIntents)
     const viewer = this.turnViewer(participant, groupContext)
-    const [recentEntries, memories, scene, arc, facts, allParticipants, webContext, activeConsequences, overlaySnapshots, followUpCommitments] = await Promise.all([
+    const [recentEntries, scene, arc, facts, allParticipants, webContext, activeConsequences, overlaySnapshots, followUpCommitments] = await Promise.all([
       // Use the runtime limits on the live path.  They are the options shown
       // to testers as “上下文条目/长期事实”，and should be authoritative.
       this.store.recentEntries(viewer, story.id, this.config.runtime.contextEntryLimit),
-      this.store.memories(viewer, story.id, this.config.runtime.memoryLimit, participant?.id),
       this.store.activeScene(viewer, story.id),
       this.store.activeArc(viewer, story.id),
       this.store.facts(viewer, story.id, this.config.runtime.memoryLimit, factQuery, participant?.id),
@@ -1621,7 +1616,7 @@ export class InterludeService {
       participants: phase === 'advance' && !advanceCanContact ? [] : participants,
       dueIntents: visibleDueIntents, activeConsequences: visibleConsequences, supersededIntents,
       shareParticipantDetails: this.sharedStoryConfig.shareParticipantDetails,
-      recentEntries: promptEntries, memories, sceneContext: { scene, arc }, facts, groupContext, webContext: mergedWebContext, overlaySnapshots,
+      recentEntries: promptEntries, sceneContext: { scene, arc }, facts, groupContext, webContext: mergedWebContext, overlaySnapshots,
       alterEnabled: this.alterSystemConfig.enabled,
       emotionalOffset: this.emotionalOffsetForPrompt(story),
       agencyEnabled,
@@ -1755,8 +1750,10 @@ export class InterludeService {
       }, now, participant?.id ?? '', scriptAudience)
     }
     await this.applyIntentUpdates(story.id, decision.intentUpdates, now, participant?.id, publicTurn)
-    for (const memory of decision.memories) {
-      await this.appendMemory(story.id, memory, now, memory.participantId ?? participant?.id ?? '', derivedAudience([turnSource], memory.audience))
+    for (const fact of decision.facts) {
+      await this.upsertFact(story.id, {
+        ...fact, participantId: fact.participantId ?? '', sourceEntryIds: scriptEntry ? [scriptEntry.id] : [],
+      }, derivedAudience([turnSource], fact.audience), now)
     }
     for (const intent of decision.intents) {
       // A reminder or promise created while handling a user's message is a
@@ -2088,14 +2085,6 @@ export class InterludeService {
     // Scene entry counts are derived during compaction. Avoiding a second
     // SQLite write here keeps every durable script append atomic and cheap.
     return normalizeDatabaseRow('interlude_script_entry', created) as ScriptEntry
-  }
-
-  private async appendMemory(storyId: string, memory: MemoryDraft, now: Date, participantId: string, audience: Audience) {
-    await this.dbCreate('interlude_memory', {
-      storyId, participantId, category: clip(memory.category, 32) || 'fact', content: clip(memory.content, 4_000),
-      importance: clampNumber(memory.importance, 0.5, 0, 1), status: 'active', sourceEntryId: null, audience: normalizeAudience(audience),
-      createdAt: now, updatedAt: now,
-    })
   }
 
   /** Owner view of persistent facts; see MemoryStore.facts. */
@@ -3146,11 +3135,19 @@ export class InterludeService {
   }
 
   private async persistFact(storyId: string, draft: FactDraft, entries: ScriptEntry[], now: Date) {
-    const content = clip(draft.content, this.memoryConfig.factContentCharacters)
-    if (!content) return
     const participantId = resolveParticipantId(draft.participantId, draft.sourceEntryIds, entries)
     const sourceEntryIds = (draft.sourceEntryIds ?? []).filter(id => entries.some(entry => entry.id === id)).slice(0, 20)
-    const audience = sourceDerivedAudience(sourceEntryIds, entries, draft.audience)
+    await this.upsertFact(storyId, { ...draft, participantId, sourceEntryIds }, sourceDerivedAudience(sourceEntryIds, entries, draft.audience), now)
+  }
+
+  /**
+   * Shared fact write for compaction and live-turn memories. The caller has
+   * already resolved participant, evidence ids and the host-side audience.
+   */
+  private async upsertFact(storyId: string, draft: FactDraft & { participantId: string; sourceEntryIds: number[] }, audience: Audience, now: Date) {
+    const content = clip(draft.content, this.memoryConfig.factContentCharacters)
+    if (!content) return
+    const { participantId, sourceEntryIds } = draft
     const existing = await this.store.rows(OWNER_VIEWER, 'interlude_fact', { storyId, status: 'active' })
     // 当前先做完全规范化匹配的去重；更复杂的语义去重可在检索层升级时替换。
     // Only merge within one audience so a public duplicate never absorbs private evidence.

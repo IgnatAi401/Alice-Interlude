@@ -97,14 +97,14 @@ export function registerCommands(ctx: Runtime, service: InterludeService) {
       return entries.map(entry => `[${entry.occurredAt.toISOString()}] ${entry.actor}/${entry.kind}: ${entry.content}`).join('\n')
     })
 
-  ctx.command('interlude.memory [limit:number]', '查看主模型提取出的耐久记忆；limit 为条数，默认 10')
+  ctx.command('interlude.memory [limit:number]', '查看与当前私聊相关、检索优先级最高的长期事实；limit 为条数，默认 10')
     .action(async ({ session = missingSession() }, limit = 10) => {
       const story = await requireStory(service, session)
       if (typeof story === 'string') return story
       const participant = await service.findParticipant(session, story)
-      const memories = await service.memories(story.id, Math.max(1, Math.min(limit, 30)), participant?.id)
-      if (!memories.length) return '暂时还没有提取出耐久记忆；多进行一些对话并等待后台整理后再看。'
-      return memories.map(memory => `m${memory.id} ${audienceMark(memory.audience)} [${memory.category}/${memory.importance.toFixed(2)}] ${memory.content}`).join('\n')
+      const facts = await service.facts(story.id, Math.max(1, Math.min(limit, 30)), '', participant?.id)
+      if (!facts.length) return '暂时还没有长期记忆；多进行一些对话并等待后台整理后再看。'
+      return facts.map(fact => `f${fact.id} ${audienceMark(fact.audience)} [${fact.scope}/${fact.importance.toFixed(2)}] ${fact.content}`).join('\n')
     })
 
   ctx.command('interlude.context', '查看场景摘要、剧情弧线、人物变化覆写和长期事实')
@@ -174,7 +174,7 @@ export function registerCommands(ctx: Runtime, service: InterludeService) {
       return await service.addAdminFact(story, scope, content) ? '已添加高置信度长期事实。' : '事实内容为空，未添加。'
     })
 
-  ctx.command('interlude.memory.forget <ref:string>', '管理员：删除一条记录；f12 事实、m5 记忆标为失效，e34 剧本条目替换为占位符（会询问 y/n）')
+  ctx.command('interlude.memory.forget <ref:string>', '管理员：删除一条记录；f12 事实标为失效，e34 剧本条目替换为占位符（会询问 y/n）')
     .action(async ({ session = missingSession() }, refText) => {
       if (!requireManager(service, session)) return '当前 Telegram 聊天没有管理权限。'
       const ref = parseMemoryRef(refText)
@@ -187,7 +187,7 @@ export function registerCommands(ctx: Runtime, service: InterludeService) {
         if (!entry) return `未找到 ${label}。`
         if (!await askConfirmation(session, `即将把剧本条目 ${label} 替换为占位符，无法恢复：\n${clip(entry.content, 200)}\n确认执行吗？(y/n)`)) return '操作已取消。'
       }
-      return await service.forgetAdminRecord(story.id, ref) ? `${label} 已删除（事实和记忆保留为失效记录）。` : `未找到有效的 ${label}。`
+      return await service.forgetAdminRecord(story.id, ref) ? `${label} 已删除${ref.kind === 'fact' ? '（保留为失效记录）' : ''}。` : `未找到有效的 ${label}。`
     })
 
   ctx.command('interlude.memory.search <query:text>', '管理员：全文搜索长期事实和剧本条目')
@@ -206,7 +206,7 @@ export function registerCommands(ctx: Runtime, service: InterludeService) {
 
   for (const audience of ['public', 'private'] as const) {
     const verb = audience === 'public' ? '公开（访客和频道可见）' : '设为私密（只有主人回合可见）'
-    ctx.command(`interlude.memory.${audience} <ref:string>`, `管理员：把一条记录${verb}；f12 事实、e34 剧本条目、m5 记忆`)
+    ctx.command(`interlude.memory.${audience} <ref:string>`, `管理员：把一条记录${verb}；f12 事实、e34 剧本条目`)
       .action(async ({ session = missingSession() }, refText) => {
         if (!requireManager(service, session)) return '当前 Telegram 聊天没有管理权限。'
         const ref = parseMemoryRef(refText)
@@ -405,18 +405,18 @@ async function changeStatus(service: InterludeService, session: Session, status:
 
 function requireManager(service: InterludeService, session: Session) { return service.canManageSession(session) }
 
-const MEMORY_REF_HELP = '编号格式：f12（事实，纯数字或 #12 也算事实）、e34（剧本条目）、m5（记忆）。'
-const MEMORY_REF_KINDS = { f: 'fact', e: 'entry', m: 'memory' } as const
+const MEMORY_REF_HELP = '编号格式：f12（事实，纯数字或 #12 也算事实）、e34（剧本条目）。'
+const MEMORY_REF_KINDS = { f: 'fact', e: 'entry' } as const
 
 function parseMemoryRef(text: unknown): MemoryRef | undefined {
-  const match = /^(?:#|([fem]))?(\d{1,15})$/i.exec(String(text ?? '').trim())
+  const match = /^(?:#|([fe]))?(\d{1,15})$/i.exec(String(text ?? '').trim())
   if (!match) return undefined
   const kind = MEMORY_REF_KINDS[(match[1]?.toLowerCase() ?? 'f') as keyof typeof MEMORY_REF_KINDS]
   return { kind, id: Number(match[2]) }
 }
 
 function formatMemoryRef(ref: MemoryRef) {
-  return `${({ fact: '事实', entry: '剧本条目', memory: '记忆' })[ref.kind]} ${ref.kind[0]}${ref.id}`
+  return `${({ fact: '事实', entry: '剧本条目' })[ref.kind]} ${ref.kind[0]}${ref.id}`
 }
 
 /** 🔒 private, 🌐 public, 👤<key> one visitor (roadmap §4.9). */

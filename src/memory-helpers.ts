@@ -13,6 +13,22 @@ export function resolveParticipantId(explicit: string | undefined, sourceEntryId
   return ids[0] ?? ''
 }
 
+const FACT_SCOPES = ['character', 'world', 'relationship', 'event', 'promise'] as const
+// Older prompts let the model choose free category labels; keep the common ones meaningful.
+const CATEGORY_SCOPE: Array<[RegExp, NarrativeFact['scope']]> = [
+  [/promise|commit|plan|约定|承诺|答应|计划/i, 'promise'],
+  [/relation|user|owner|主人|关系|对方/i, 'relationship'],
+  [/world|place|setting|location|世界|地点|环境/i, 'world'],
+  [/character|self|preference|habit|trait|角色|自己|喜好|习惯|性格/i, 'character'],
+]
+
+/** Maps a memories item's category to a fact scope (roadmap §4.4); anything unknown becomes an event. */
+export function memoryCategoryScope(category: unknown): NarrativeFact['scope'] {
+  const text = typeof category === 'string' ? category.trim() : ''
+  const exact = FACT_SCOPES.find(scope => scope === text.toLowerCase())
+  return exact ?? CATEGORY_SCOPE.find(([pattern]) => pattern.test(text))?.[1] ?? 'event'
+}
+
 export function limitEntriesByCharacters(entries: ScriptEntry[], limit: number) {
   if (limit <= 0) return []
   let used = 0

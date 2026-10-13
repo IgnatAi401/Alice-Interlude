@@ -46,7 +46,6 @@ export function publicNarrativeRequest(draft: NarrativeRequest, options: PublicC
     activeConsequences: ownOnly(draft.activeConsequences),
     supersededIntents: ownOnly(draft.supersededIntents),
     recentEntries: draft.recentEntries,
-    memories: draft.memories,
     sceneContext: draft.sceneContext,
     facts: draft.facts,
     overlaySnapshots: draft.overlaySnapshots,
