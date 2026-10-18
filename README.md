@@ -6,7 +6,7 @@
 
 ## 启动
 
-需要 macOS、Node.js 22.14 以上的 22.x 或 24.x，以及 pnpm。本项目已有 `pnpm-lock.yaml`，请使用同一套工具。
+需要 macOS、Node.js 24.x，以及 pnpm。本项目已有 `pnpm-lock.yaml`，请使用同一套工具。
 
 ```sh
 cd /Users/ignat/Developer/Alice-Interlude

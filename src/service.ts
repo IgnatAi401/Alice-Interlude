@@ -1241,6 +1241,7 @@ export class InterludeService {
       return
     }
     const requestId = revision
+    const requestStartedAt = Date.now()
     turn.inFlightRequestId = requestId
     let toolTurnId: string | undefined
     try {
@@ -1272,6 +1273,7 @@ export class InterludeService {
         snapshot.story, snapshot.participant, 'user-message', snapshot.from, snapshot.now, userMessage, snapshot.due, superseded, undefined, images,
       )
       toolTurnId = turnId
+      if (succeeded) await this.waitFirstBubbleTyping(decision, requestStartedAt, () => turn.obsoleteRequestIds.has(requestId))
 
       const result = await this.serial(turn.storyId, async () => {
         if (this.databaseResetting) return { obsolete: true, requeue: false, messages: [] as OutgoingMessageDraft[] }
@@ -2843,7 +2845,25 @@ export class InterludeService {
     const charactersPerSecond = Math.max(1, this.config.runtime.typingCharactersPerSecond ?? 8)
     const maximumSeconds = Math.max(baseSeconds, this.config.runtime.typingMaxDelaySeconds ?? 12)
     const seconds = Math.min(maximumSeconds, baseSeconds + Math.ceil(nextSegment.length / charactersPerSecond))
-    return seconds * Time.second
+    // Equal-length bubbles at identical intervals read as a script, not a person typing.
+    const jitter = Math.min(0.9, Math.max(0, this.config.runtime.typingJitterRatio ?? 0.3))
+    return Math.round(seconds * Time.second * (1 + (Math.random() * 2 - 1) * jitter))
+  }
+
+  /**
+   * A fast provider must not make a long first bubble appear instantly. Waits
+   * out the rest of its typing time before the reply is committed, so a new
+   * message during the wait still supersedes the request and rewrites it.
+   */
+  private async waitFirstBubbleTyping(decision: NarrativeDecision, startedAt: number, isObsolete: () => boolean) {
+    const reply = decision.interaction?.reply
+    if (reply?.mode !== 'immediate' || typeof reply.content !== 'string') return
+    const [first] = this.splitOutgoingMessage(reply.content)
+    if (!first) return
+    const deadline = startedAt + this.typingDelayMilliseconds(first)
+    while (Date.now() < deadline && !isObsolete() && !this.databaseResetting) {
+      await new Promise(resolve => setTimeout(resolve, Math.min(250, deadline - Date.now())))
+    }
   }
 
   private findBotForParticipant(participant: InterludeParticipant) {

@@ -65,7 +65,7 @@
 - `runtime.userMessageDebounceSeconds`：等待短时连续消息，默认 2 秒。
 - `runtime.autoAdvanceEnabled`、`autoAdvanceIntervalMinutes`、`restWindows`：后台生活节奏。
 - `runtime.conversationFollowUpMinutes`：对话结束后的短期生活补写。
-- `runtime.splitReplyMessages` 和打字延迟：自然拆分多条回复。
+- `runtime.splitReplyMessages` 和打字延迟：自然拆分多条回复。`typingJitterRatio`（默认 0.3）让每段打字时间上下随机浮动约 30%，填 0 恢复固定延迟；模型回复很快时，首条气泡也会按字数等够打字时间再发，等待中收到新消息会合并重写。
 - `runtime.allowProactiveMessages`：是否允许主动可见联系，默认关闭。
 - `memory`：场景压缩阈值、事实数量、人物变化证据和冷却期；检索为全文索引（中文三字片段）与重要度排序。
 - `memory.publicOwnerProfile`：非主人聊天（其他私聊、群聊，以后的网站）里 Alice 可以知道的主人信息，默认为空。这些聊天看不到 `storyDefaults.userProfile`、`relationship` 和主人的私密记忆；只在这里写愿意公开的内容。

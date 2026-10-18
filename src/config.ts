@@ -154,6 +154,8 @@ export interface RuntimeConfig {
   typingBaseDelaySeconds?: number
   typingCharactersPerSecond?: number
   typingMaxDelaySeconds?: number
+  /** Random spread around each typing delay (0.3 = ±30%); 0 keeps it fixed. */
+  typingJitterRatio?: number
   /** Wait after the newest user message before starting a writing request. */
   userMessageDebounceSeconds?: number
   /** Automatic life-writing schedule. */
@@ -303,7 +305,7 @@ export const DEFAULT_CONFIG: Config = {
     maxCrossConversationActions: 1, participantContextLimit: 6 },
   runtime: {
     splitReplyMessages: true, messageSeparator: '<sep/>', typingBaseDelaySeconds: 1, typingCharactersPerSecond: 8,
-    typingMaxDelaySeconds: 12, userMessageDebounceSeconds: 2, narrativeRetryDelaySeconds: 60, narrativeRetryMaxAttempts: 6,
+    typingMaxDelaySeconds: 12, typingJitterRatio: 0.3, userMessageDebounceSeconds: 2, narrativeRetryDelaySeconds: 60, narrativeRetryMaxAttempts: 6,
     captureDirectMessages: true, autoCreate: false, ignoreCommandMessages: true, allowProactiveMessages: false,
     proactiveWillingnessThreshold: 0.65, sweepIntervalMinutes: 5, minimumAdvanceMinutes: 30, maxStoriesPerSweep: 20,
     contextEntryLimit: 30, memoryLimit: 20, maxScriptCharacters: 8000, maxMessageCharacters: 2000,

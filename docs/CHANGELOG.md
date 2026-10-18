@@ -2,6 +2,7 @@
 
 ## 未发布
 
+- 运行环境改为 Node.js 24.x（不再支持 22.x）。
 - 移除 `test/` 自动化测试与 `pnpm test`；开发检查改为 `pnpm typecheck`、`pnpm build` 和实际运行验证。
 - 文档整理到 `docs/guide/`（使用说明）和 `docs/design/`（设计说明）。
 - 新增必填环境变量 `ALICE_OWNER_CHAT_ID`（主人私聊 chat id，须在 `TELEGRAM_CHAT_IDS` 中）。
@@ -18,6 +19,11 @@
 - 新增调试开关 `logging.dumpRequests`（需 `verbosity=diagnostic`），导出完整模型请求用于隐私检查。
 - 新增主人私聊工具（默认关闭，`tools.enabled`）：`recall` 检索更早的记忆，`read_skill` 读取 `~/AliceWorkspace/skills` 中的说明书，`exec` 请求在 Mac 上执行命令。每条命令都会单独发来带【执行】【拒绝】按钮的消息，10 分钟内有效；执行结果会交回 Alice 回复。其他聊天没有任何工具。
 - 新增 `/interlude.exec [编号]` 查看命令审批记录和输出。
+
+- 打字节奏更像真人：每段延迟随机浮动（`runtime.typingJitterRatio`，默认 0.3）；私聊首条气泡按字数补足打字时间再发，等待中来了新消息会合并重写。
+- 提示词说明 `[管理员注记]` 是主人写入的权威设定，Alice 会照此行事但不会提起注记本身；最近 3 条注记在上下文截断时保持完整。
+- 私聊连续两次以上用相同条数（≥2 条）回复时，提醒模型不要沿用固定条数。
+- 提示词补充“换行不分气泡，只有 `<sep/>` 分”和线上打字表达指引。
 
 ## 0.1.3 · 独立 Telegram 版
 
