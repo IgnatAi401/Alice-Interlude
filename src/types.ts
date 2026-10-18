@@ -1,4 +1,5 @@
 import type { Audience, ClassifiedAudience } from './memory/audience'
+import type { LifeRhythm, UrgeState } from './urge'
 import type { TurnTools } from './capabilities/loop'
 
 export type StoryStatus = 'active' | 'paused' | 'archived'
@@ -98,6 +99,7 @@ export interface StoryAutomationState {
   /** Relationship branch whose recent conversation supplies the 10/20-minute
    * continuity context. Omitted for ordinary background advancement. */
   conversationFollowUpParticipantId?: string
+  urge?: UrgeState
 }
 
 export type AgencyActivityLoad = 'free' | 'occupied' | 'overloaded'
@@ -420,6 +422,8 @@ export interface NarrativeDecision {
   script?: string
   /** Net atmosphere movement introduced by this turn: -5 relaxed, +5 serious. */
   alter?: number
+  /** Background passages only, when Urge is enabled: her current life rhythm, used for scheduling. */
+  lifeRhythm?: LifeRhythm
   /** Optional external-action capacity update; it never controls prose style. */
   agencyWindow?: Partial<AgencyWindowState>
   /** Optional life-grounded contact decision for advance/proactive-check turns. */
@@ -495,6 +499,8 @@ export interface NarrativeRequest {
   /** Present only for a group-scene turn; private-message privacy remains unchanged. */
   groupContext?: GroupContext
   alterEnabled?: boolean
+  /** Ask background passages for lifeRhythm (Urge scheduling). */
+  urgeEnabled?: boolean
   emotionalOffset?: EmotionalOffsetPrompt | null
   agencyEnabled?: boolean
   agencyWindow?: AgencyWindowState | null

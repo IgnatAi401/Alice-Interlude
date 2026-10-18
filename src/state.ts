@@ -1,4 +1,5 @@
 import { normalizeAgencyWindowState } from './agency'
+import { normalizeUrgeState } from './urge'
 import { normalizeAlterSystemState } from './alter'
 import { AutomaticDeliverySummary, ContinuitySnapshot, InterludeParticipant, InterludeStory, ParticipantState, ScenePresenceState, StorySetting, StoryState } from './types'
 import { clip, isRecord, toDate } from './util'
@@ -133,6 +134,7 @@ export function normalizeStoryState(value: unknown): StoryState {
       conversationFollowUpParticipantId: typeof automation.conversationFollowUpParticipantId === 'string'
         ? clip(automation.conversationFollowUpParticipantId, 255)
         : undefined,
+      urge: normalizeUrgeState(automation.urge),
     },
   }
 }

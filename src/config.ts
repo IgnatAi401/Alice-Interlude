@@ -167,6 +167,17 @@ export interface RuntimeConfig {
   /** Small random offset applied to each short conversation follow-up. */
   conversationFollowUpJitterMinutes?: number
   restWindows?: RestWindow[]
+  /** Elastic regular cadence from conversation density and life rhythm (src/urge.ts). */
+  urge?: UrgeConfig
+}
+
+export interface UrgeConfig {
+  enabled?: boolean
+  /** Speed-up at full conversation density (1.4 = 40% shorter interval). */
+  activeMultiplier?: number
+  /** Applied inside a rest window when no fresh life rhythm is known. */
+  restMultiplier?: number
+  halfLifeMinutes?: number
 }
 
 export interface BrowserConfig {
@@ -313,6 +324,7 @@ export const DEFAULT_CONFIG: Config = {
     autoAdvanceEnabled: true, autoAdvanceIntervalMinutes: 40, autoAdvanceJitterMinutes: 5,
     conversationFollowUpMinutes: [10, 20], conversationFollowUpJitterMinutes: 1,
     restWindows: [{ enabled: true, label: 'night sleep', start: '23:00', end: '07:00', minIntervalMinutes: 120, maxIntervalMinutes: 240 }],
+    urge: { enabled: false, activeMultiplier: 1.4, restMultiplier: 0.6, halfLifeMinutes: 90 },
   },
   agency: { enabled: true, maxWindowMinutes: 240, minimumProactiveIntervalMinutes: 30, maxCandidateHours: 48 },
   alterSystem: { ...DEFAULT_ALTER_SYSTEM_CONFIG, enabled: true },

@@ -37,6 +37,7 @@ Telegram getUpdates 长轮询
 | `decision.ts` | 校验和规范化模型返回的 JSON，之后才会保存或投递 |
 | `state.ts` | 规范化已保存的故事、参与者状态和数据库行 |
 | `schedule.ts` | 自动推进、休息窗口和到期意图的时间规则 |
+| `urge.ts` | Urge 弹性推进：对话密度与五档生活节奏决定常规推进间隔（默认关闭） |
 | `memory-helpers.ts` | 事实检索、压缩输入和设定变化分组的纯函数 |
 | `web-observer.ts`、`web-policy.ts` | 可选网页浏览：Chrome 页面读取，以及公开网页安全规则 |
 | `util.ts` | 通用小工具 |

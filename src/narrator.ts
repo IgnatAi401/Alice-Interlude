@@ -295,9 +295,11 @@ export function buildNarrativeMessages(request: NarrativeRequest, config: ModelC
   content.push({ type: 'text', text: turnInstructions(request.phase, request.refreshContinuity === true,
     request.alterEnabled === true, request.agencyEnabled === true,
     Boolean(request.story.setting.perspective?.trim() || request.story.state.settingOverlay?.perspective?.trim()),
-    request.outputRecovery === true) })
+    request.outputRecovery === true, request.urgeEnabled === true) })
   const repetition = repetitionGuardInstruction(request)
   if (repetition) content.push({ type: 'text', text: repetition })
+  const exchange = recentExchange(request)
+  if (exchange.length) content.push(textBlock({ recentExchange: exchange }))
   content.push(textBlock({ interval, currentEvent }))
   for (const image of request.phase === 'user-message' ? request.images ?? [] : []) {
     const match = /^data:(image\/(?:jpeg|png|gif|webp));base64,([a-z0-9+/=]+)$/i.exec(image.dataUri)
@@ -471,6 +473,7 @@ export function stableSystemPrompt(mainPrompt: string | undefined, formatPrompt:
     'Every recentScript item includes an ownership label. The ownership label is authoritative for who thought, narrated, observed or actually sent the content. In particular, protagonist-narrative belongs to the protagonist even when it mentions the user; a thought about the user is not a thought by the user. protagonist-undelivered-message is text she typed and tried to send that never reached the other person (a network failure, not her choice): they have not read it, so do not treat it as known to them; she may notice it failed and resend or rephrase it naturally.',
     'Never invent an incoming message from a named person, a phone vibration, a notification, a reply from another participant, or a quoted sentence that is absent from the observed-event ledger. Do not write “the phone vibrated”, “X sent a message”, “a message arrived”, or equivalent wording unless that exact external event is present in the supplied context. In a no-event phase, do not use an imagined notification as a scene transition or closing hook: let anticipation remain anticipation, and close on the protagonist’s own life at now.',
     'A recentScript item of kind admin-note, whose content starts with [管理员注记], was written by the bot owner as an authoritative fact or direction. It outweighs ordinary system events and, on the subject it addresses, overrides narrative improvisation. The protagonist has already absorbed it as how things are: never quote the note, mention its existence, or treat it as a message someone sent.',
+    'recentExchange, when present, repeats the last few delivered messages of this chat from recentScript, oldest first, so the latest wording stays in view. It is not a new event and may end with the message that is currentEvent.',
     'The character may remember or wonder about an unobserved person, but must describe it as uncertainty without claiming that contact happened. The script is an account of observed reality, not a simulation of messages that the bot did not receive or send.',
     'The base setting is canon and describes the starting point. Stable overlay is the accumulated present condition after repeated evidence and takes precedence when it clearly conflicts with an old baseline. Recent relationship notes and continuity salient items describe current tendencies or temporary effects; they influence behavior without rewriting personality. A single mood, reply, or unusual event does not change canon or stable overlay.',
     'Completed visible communication stays aligned across prose and transport: interaction.reply carries a current private reply, groupReply carries a current group reply, and crossConversationActions carries an allowed other-participant action. In an advance passage, pair each completed other-participant message in the script with a matching immediate crossConversationAction containing the delivered content. Let considerations, drafts, and later possibilities remain inside the protagonist’s life until their matching action carries them outward.',
@@ -491,7 +494,7 @@ export function stableSystemPrompt(mainPrompt: string | undefined, formatPrompt:
 }
 
 
-function turnInstructions(phase: NarrativeRequest['phase'], refreshContinuity: boolean, alterEnabled: boolean, agencyEnabled: boolean, perspectiveEnabled: boolean, outputRecovery: boolean) {
+function turnInstructions(phase: NarrativeRequest['phase'], refreshContinuity: boolean, alterEnabled: boolean, agencyEnabled: boolean, perspectiveEnabled: boolean, outputRecovery: boolean, urgeEnabled = false) {
   return [
     phaseInstruction(phase),
     refreshContinuity
@@ -502,6 +505,9 @@ function turnInstructions(phase: NarrativeRequest['phase'], refreshContinuity: b
       : 'Do not output an alter field because Alter System is disabled.',
     agencyInstruction(phase, agencyEnabled), automaticDeliveryInstruction(phase), followUpCommitmentInstruction(phase),
     perspectiveInstruction(perspectiveEnabled),
+    urgeEnabled && phase !== 'user-message'
+      ? 'Optionally return lifeRhythm, her rhythm at the end of the script you just wrote: "phone-focused" (actively using her phone), "available" (free), "occupied" (busy with a task, class or work), "resting" (lying down or low-energy but awake) or "asleep". It only tunes how soon her life is written again; it is not speech, an event or a plan.'
+      : '',
     outputRecovery ? 'OUTPUT RECOVERY: Start a fresh unpublished decision for this same event. Pair every visible reply reached in script prose with its matching structured reply field, and return an explicit structured none when the protagonist stays silent.' : '',
     'The currentParticipant profile and relationship apply only to this conversation; they take precedence over generic user/relationship defaults. setting.style is the story-specific prose style.',
   ].filter(Boolean).join('\n')
@@ -520,6 +526,29 @@ export function recentBubbleCounts(entries: NarrativeRequest['recentEntries'], p
     else counts.push(1)
   }
   return counts
+}
+
+const RECENT_EXCHANGE_LIMIT = 6
+
+/**
+ * Copies the last few real messages of this private chat next to the
+ * generation point; a long recentScript otherwise buries them in prose.
+ * Never cached: it moves every turn.
+ */
+export function recentExchange(request: Pick<NarrativeRequest, 'phase' | 'participant' | 'groupContext' | 'recentEntries'>) {
+  if (request.groupContext || !request.participant) return []
+  if (request.phase !== 'user-message' && request.phase !== 'conversation-follow-up') return []
+  const participantId = request.participant.id
+  return request.recentEntries
+    .filter(entry => entry.participantId === participantId
+      && (entry.kind === 'user-message' || entry.kind === 'character-message')
+      && entry.delivery !== 'pending' && entry.delivery !== 'failed')
+    .slice(-RECENT_EXCHANGE_LIMIT)
+    .map(entry => ({
+      from: entry.kind === 'user-message' ? 'user' : 'protagonist',
+      content: entry.content.length > 300 ? `${entry.content.slice(0, 300)}…` : entry.content,
+      occurredAt: entry.occurredAt.toISOString(),
+    }))
 }
 
 /** Only private conversation turns; the model tends to copy its own bubble count once it has repeated twice. */

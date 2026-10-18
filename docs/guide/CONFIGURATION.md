@@ -64,6 +64,7 @@
 
 - `runtime.userMessageDebounceSeconds`：等待短时连续消息，默认 2 秒。
 - `runtime.autoAdvanceEnabled`、`autoAdvanceIntervalMinutes`、`restWindows`：后台生活节奏。
+- `runtime.urge.enabled`：默认 `false`。开启后常规推进间隔会随对话和 Alice 的生活状态伸缩：最近私聊越密集，推进越快（最多快 `activeMultiplier`=1.4 倍，按 `halfLifeMinutes`=90 分钟慢慢回落）；后台剧情会给出她当前的状态（玩手机 ×1.4、空闲 ×1、忙 ×0.7、躺着 ×0.5、睡觉 ×0.15），你发消息会把她从躺着/睡觉叫醒到玩手机。状态超过 2 小时没更新时，休息窗口内乘 `restMultiplier`（0.6），不再直接换成窗口里的长间隔。对话后的 10/20 分钟短期补写不受影响。
 - `runtime.conversationFollowUpMinutes`：对话结束后的短期生活补写。
 - `runtime.splitReplyMessages` 和打字延迟：自然拆分多条回复。`typingJitterRatio`（默认 0.3）让每段打字时间上下随机浮动约 30%，填 0 恢复固定延迟；模型回复很快时，首条气泡也会按字数等够打字时间再发，等待中收到新消息会合并重写。
 - `runtime.allowProactiveMessages`：是否允许主动可见联系，默认关闭。

@@ -1,4 +1,5 @@
 import { normalizeAlterValue } from './alter'
+import { isLifeRhythm } from './urge'
 import { MemoryConfig, RuntimeConfig, SharedStoryConfig } from './config'
 import { Time } from './runtime'
 import { normalizeAutomaticDeliverySummary, normalizeContinuitySnapshot, normalizeScenePresenceState } from './state'
@@ -218,7 +219,9 @@ export function normalizeDecision(raw: NarrativeDecision, from: Date, now: Date,
     : []
   const agencyWindow = isRecord(raw?.agencyWindow) ? raw.agencyWindow : undefined
   const proactiveContact = isRecord(raw?.proactiveContact) ? raw.proactiveContact : undefined
-  return { script, scriptAudience, alter, agencyWindow, proactiveContact, interaction, automaticDeliverySummary, followUpCommitment, followUpResolutions, continuity, facts, intents, intentUpdates, browserIntents, statePatch, crossConversationActions }
+  // Only background passages describe her own ongoing life; a live chat turn never sets it.
+  const lifeRhythm = phase !== 'user-message' && isLifeRhythm(raw?.lifeRhythm) ? raw.lifeRhythm : undefined
+  return { script, scriptAudience, alter, lifeRhythm, agencyWindow, proactiveContact, interaction, automaticDeliverySummary, followUpCommitment, followUpResolutions, continuity, facts, intents, intentUpdates, browserIntents, statePatch, crossConversationActions }
 }
 
 export function normalizeInteraction(value: unknown, now: Date, runtime: RuntimeConfig): NarrativeInteraction | undefined {

@@ -1,12 +1,13 @@
 import { activeAgencyWindow, evaluateAgencyCapacity, normalizeAgencyWindowDraft, normalizeProactiveContact, proactiveCandidateFingerprint, proactiveRecheckAt, resolveAgencyConfig } from './agency'
 import { AlterTurnResult, advanceAlterSystem, alterAnalysisCoolingDown, calculateAlterThreshold, completeAlterAnalysis, emotionalOffsetForPrompt, normalizeAlterSystemState, resolveAlterSystemConfig } from './alter'
-import { BlindModeConfig, Config, DEFAULT_CONFIG, DEFAULT_MEMORY_CONFIG, ToolsConfig, GroupChatRule, MemoryConfig, SharedStoryConfig, resolveBlindModeConfig } from './config'
+import { BlindModeConfig, Config, DEFAULT_CONFIG, DEFAULT_MEMORY_CONFIG, ToolsConfig, GroupChatRule, MemoryConfig, SharedStoryConfig, UrgeConfig, resolveBlindModeConfig } from './config'
 import { automaticDeliveryFromPayload, consequenceExpiresAt, consequenceStrength, followUpExpiresAt, hasCompactionEvidence, hasRequiredNarrativeScript, inferredFollowUpCommitment, interactionPromisesFollowUp, isActiveConsequence, isActiveConsequenceDraft, isAutomaticNarrativePhase, mergeDeliverySummary, normalizeDecision, normalizeFollowUpSummary, normalizeGroupVisibleReply, normalizeIntentUpdates, normalizeInteraction, normalizeScenePresenceDrafts, requiresVisibleReplyRecovery, visibleReplyMode } from './decision'
 import { GroupWillingnessState, consumeGroupWillingness, evaluateGroupWillingness } from './group-willingness'
 import { formatLayeredLog, phaseLabel, renderLogMessage } from './logging'
 import { createFactQuery, groupOverlayPatches, groupOverlaySnapshots, limitEntriesByCharacters, mergeNote, normalizeMajorEvents, patchClaimsMatch, publicSettingOverlay, resolveParticipantId, statePatchEvidence } from './memory-helpers'
 import { createCompactor, createNarrator, hasAnthropicCredentials } from './narrator'
 import { Logger, Runtime, MessageSession as Session, Time } from './runtime'
+import { urgeIntervalMinutes, urgeRhythm, urgeUserMessage } from './urge'
 import { AutoAdvanceConfig, activeRestWindow, clockMinutes, automaticIntervalMinutes, groupDueIntents, normalizeFollowUpMinutes, scheduleConversationFollowUps } from './schedule'
 import { AUDIENCE_TABLES, isTransientDatabaseError, normalizeContinuitySnapshot, mergeParticipantState, mergeSetting, narrativeCursor, normalizeDatabaseRow, normalizeParticipantState, normalizeStoryState, participantRelevance } from './state'
 import { SendFailure, TelegramEnvironment, classifySendFailure, isAllowedTelegramSession, readTelegramEnvironment, telegramChatId } from './adapters/telegram-private'
@@ -20,7 +21,7 @@ import { resolve } from 'node:path'
 import { calendarDayKey, formatLogTime, localClockMinutes } from './time'
 import { EXPIRED_PLACEHOLDER, consolidationRequest, duplicateMerges, validSupersessions, visitorExpiryCutoff } from './memory/consolidate'
 import { AgencyConfig, AgencyWindowState, AlterSystemConfig, AlterSystemState, AutomaticDeliverySummary, CompactionDecision, DeliveryState, EmotionalOffsetPrompt, FactDraft, FollowUpCommitmentDraft, FollowUpResolutionDraft, GroupContext, GroupMessageContext, IntentDraft, InterludeArc, InterludeParticipant, InterludeScene, InterludeStory, NarrativeCompactor, NarrativeDecision, NarrativeFact, NarrativeImage, NarrativeIntent, NarrativeInteraction, NarrativeProvider, NarrativeRequest, OutgoingMessageDraft, OverlaySnapshot, ParticipantState, PublicDigestDecision, ProactiveContactDraft, ScriptEntry, ScriptEntryDraft, StatePatchDraft, StatePatchProposal, StorySetting, StoryState, WebObservation, emptyParticipantState, emptyStorySetting, emptyStoryState } from './types'
-import { clampNumber, clip, isRecord, normalizeFact, sameTimestamp, toDate } from './util'
+import { clampNumber, clip, isRecord, normalizeFact, randomInteger, sameTimestamp, toDate } from './util'
 import { normalizeBrowserIntentDraft } from './web-policy'
 import { WebObserver } from './web-observer'
 import { ToolRegistry } from './capabilities/registry'
@@ -906,7 +907,7 @@ export class InterludeService {
       }, now, incomingParticipant.id, this.sourceAudience(incomingParticipant))
       // Messages are persisted at arrival. The model request itself is
       // debounced below, so a burst can become one coherent writing turn.
-      await this.pauseAutomaticAdvanceAfterUserMessage(current.id, now)
+      await this.pauseAutomaticAdvanceAfterUserMessage(current.id, now, true)
       return { story: current, participant: incomingParticipant, now, superseded }
     })
     if (!accepted) return false
@@ -1650,6 +1651,7 @@ export class InterludeService {
       shareParticipantDetails: this.sharedStoryConfig.shareParticipantDetails,
       recentEntries: promptEntries, sceneContext: { scene, arc }, facts, groupContext, webContext: mergedWebContext, overlaySnapshots,
       alterEnabled: this.alterSystemConfig.enabled,
+      urgeEnabled: this.urgeConfig.enabled && this.autoAdvanceConfig.enabled,
       emotionalOffset: this.emotionalOffsetForPrompt(story),
       agencyEnabled,
       agencyWindow: agencyEnabled ? activeAgencyWindow(story.state.agencyWindow, now) ?? null : null,
@@ -2013,6 +2015,9 @@ export class InterludeService {
       if (decision.continuity) {
         nextState.continuitySnapshot = decision.continuity
         nextState.lastContinuityUpdateAt = now.toISOString()
+      }
+      if (decision.lifeRhythm && !publicTurn && this.urgeConfig.enabled) {
+        nextState.automation = { ...nextState.automation, urge: urgeRhythm(nextState.automation.urge, decision.lifeRhythm, now) }
       }
       const alterTurn = this.updateAlterSystem(story, state.alterSystem, decision.alter, phase, now)
       nextState.alterSystem = alterTurn?.state ?? state.alterSystem
@@ -2999,6 +3004,22 @@ export class InterludeService {
     }
   }
 
+  private get urgeConfig(): Required<UrgeConfig> {
+    return { enabled: false, activeMultiplier: 1.4, restMultiplier: 0.6, halfLifeMinutes: 90, ...(this.config.runtime.urge ?? {}) }
+  }
+
+  /** Regular cadence; with Urge it stretches or shrinks by conversation density and life rhythm. */
+  private automaticInterval(story: InterludeStory, now: Date, urge = story.state.automation?.urge) {
+    const config = this.autoAdvanceConfig
+    if (!this.urgeConfig.enabled) return automaticIntervalMinutes(story, now, config)
+    const base = Math.max(1, config.intervalMinutes + randomInteger(-config.jitterMinutes, config.jitterMinutes))
+    const inRest = !!activeRestWindow(config.restWindows, story.setting.timezone, now)
+    const planned = urgeIntervalMinutes(base, urge, now, inRest, this.urgeConfig)
+    this.reportOperation('diagnostic', 'debug', story, 'advance', 'Urge 间隔 基础=%d分钟 密度=%s 节奏=%s 结果=%d分钟',
+      base, planned.density.toFixed(2), planned.rhythm, planned.minutes)
+    return planned.minutes
+  }
+
   private isAutomaticAdvancePaused(story: InterludeStory, now: Date) {
     const quietUntil = toDate(story.state.automation?.quietUntil)
     return !!quietUntil && quietUntil > now
@@ -3041,18 +3062,20 @@ export class InterludeService {
     return now.getTime() - story.cursorAt.getTime() >= config.intervalMinutes * Time.minute
   }
 
-  private async pauseAutomaticAdvanceAfterUserMessage(storyId: string, now: Date) {
+  private async pauseAutomaticAdvanceAfterUserMessage(storyId: string, now: Date, privateMessage = false) {
     // Cancel the old post-conversation cadence as soon as a new message
     // arrives. The new cadence is set after this turn has actually decided
     // whether it replies now, later, or not at all.
     const story = await this.getStory(storyId)
-    const fallbackNext = new Date(now.getTime() + automaticIntervalMinutes(story, now, this.autoAdvanceConfig) * Time.minute)
+    const urge = privateMessage && this.urgeConfig.enabled ? urgeUserMessage(story.state.automation?.urge, now) : story.state.automation?.urge
+    const fallbackNext = new Date(now.getTime() + this.automaticInterval(story, now, urge) * Time.minute)
     const automation = {
       ...(story.state.automation ?? {}),
       conversationFollowUpAt: [],
       conversationFollowUpParticipantId: undefined,
       quietUntil: undefined,
       lastUserMessageAt: now.toISOString(),
+      urge,
       // Covers group-gate silence and provider failures: no old short timer
       // may fire while this fresh conversation event is still unresolved.
       nextAdvanceAt: fallbackNext.toISOString(),
@@ -3079,7 +3102,7 @@ export class InterludeService {
     const followUps = activeRestWindow(config.restWindows, story.setting.timezone, anchor)
       ? []
       : scheduleConversationFollowUps(anchor, config)
-    const normalNext = followUps.at(-1) ?? new Date(anchor.getTime() + automaticIntervalMinutes(story, anchor, config) * Time.minute)
+    const normalNext = followUps.at(-1) ?? new Date(anchor.getTime() + this.automaticInterval(story, anchor) * Time.minute)
     const automation = {
       ...(story.state.automation ?? {}),
       // Follow-ups are the only special post-conversation schedule. Regular
@@ -3100,7 +3123,7 @@ export class InterludeService {
     const config = this.autoAdvanceConfig
     if (!config.enabled) return
     const story = await this.getStory(storyId)
-    const intervalMinutes = automaticIntervalMinutes(story, now, config)
+    const intervalMinutes = this.automaticInterval(story, now)
     const nextAdvanceAt = new Date(now.getTime() + intervalMinutes * Time.minute)
     const automation = {
       ...(story.state.automation ?? {}),
