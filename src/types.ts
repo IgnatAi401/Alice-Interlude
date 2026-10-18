@@ -193,10 +193,15 @@ export interface ScriptEntry {
   content: string
   occurredAt: Date
   metadata: Record<string, unknown>
+  /** Transport outcome of a protagonist message that failed its first send; absent means delivered. */
+  delivery?: DeliveryState
   /** Who may see this record; see memory/audience.ts. */
   audience: Audience
   createdAt: Date
 }
+
+/** pending: waiting for a delivery-retry; unknown: may or may not have arrived; sent: delivered by a retry. */
+export type DeliveryState = 'pending' | 'failed' | 'unknown' | 'sent'
 
 export type SceneStatus = 'active' | 'closed'
 
@@ -337,6 +342,7 @@ export interface ScriptEntryDraft {
   content: string
   occurredAt?: string
   metadata?: Record<string, unknown>
+  delivery?: DeliveryState
 }
 
 export interface MemoryDraft { category: string; content: string; importance?: number; participantId?: string; audience?: ClassifiedAudience }
@@ -354,6 +360,8 @@ export interface OutgoingMessageDraft {
   content: string
   /** Attached only to no-current-user background deliveries. */
   automaticDelivery?: Pick<AutomaticDeliverySummary, 'summary' | 'sourceEntryId'>
+  /** The script entry already written for this message; a failed send is recorded on it. */
+  entryId?: number
 }
 
 /** A future browsing action proposed by the narrator. It is not an observed

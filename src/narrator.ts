@@ -468,7 +468,7 @@ export function stableSystemPrompt(mainPrompt: string | undefined, formatPrompt:
     'When an activeConsequence has naturally been fulfilled, absorbed, displaced by a new development, or has become irrelevant, return intentUpdates with its visible id and status completed or cancelled, plus a brief resolution. Do not update scheduled plans through intentUpdates; their due turn resolves them.',
     'Write only the portion of life that has reached now. Leave future possibilities as intentions, hesitations, plans, or structured delayed actions with a time after now.',
     'Treat currentEvent, groupContext.messages, dueIntents and webContext as the sources for events occurring in this interval. Treat recentScript and durableFacts as the established past that gives the current scene continuity. When the protagonist thinks of an absent person, let memory, expectation, doubt or longing remain recognizably her own rather than turning into a new contact event.',
-    'Every recentScript item includes an ownership label. The ownership label is authoritative for who thought, narrated, observed or actually sent the content. In particular, protagonist-narrative belongs to the protagonist even when it mentions the user; a thought about the user is not a thought by the user.',
+    'Every recentScript item includes an ownership label. The ownership label is authoritative for who thought, narrated, observed or actually sent the content. In particular, protagonist-narrative belongs to the protagonist even when it mentions the user; a thought about the user is not a thought by the user. protagonist-undelivered-message is text she typed and tried to send that never reached the other person (a network failure, not her choice): they have not read it, so do not treat it as known to them; she may notice it failed and resend or rephrase it naturally.',
     'Never invent an incoming message from a named person, a phone vibration, a notification, a reply from another participant, or a quoted sentence that is absent from the observed-event ledger. Do not write “the phone vibrated”, “X sent a message”, “a message arrived”, or equivalent wording unless that exact external event is present in the supplied context. In a no-event phase, do not use an imagined notification as a scene transition or closing hook: let anticipation remain anticipation, and close on the protagonist’s own life at now.',
     'A recentScript item of kind admin-note, whose content starts with [管理员注记], was written by the bot owner as an authoritative fact or direction. It outweighs ordinary system events and, on the subject it addresses, overrides narrative improvisation. The protagonist has already absorbed it as how things are: never quote the note, mention its existence, or treat it as a message someone sent.',
     'The character may remember or wonder about an unobserved person, but must describe it as uncertainty without claiming that contact happened. The script is an account of observed reality, not a simulation of messages that the bot did not receive or send.',
@@ -564,13 +564,15 @@ export type RecentScriptOwnership =
   | 'protagonist-narrative'
   | 'user-delivered-message'
   | 'protagonist-delivered-message'
+  | 'protagonist-undelivered-message'
   | 'external-group-message'
   | 'system-event'
 
 export function recentScriptOwnership(
-  entry: Pick<NarrativeRequest['recentEntries'][number], 'kind' | 'actor'>,
+  entry: Pick<NarrativeRequest['recentEntries'][number], 'kind' | 'actor' | 'delivery'>,
 ): RecentScriptOwnership {
   if (entry.kind === 'group-message') return 'external-group-message'
+  if (entry.delivery === 'pending' || entry.delivery === 'failed') return 'protagonist-undelivered-message'
   if (entry.kind === 'user-message' || entry.actor === 'user') return 'user-delivered-message'
   if (entry.kind === 'character-message' || entry.kind === 'character-group-message' || entry.actor === 'character') {
     return 'protagonist-delivered-message'
@@ -679,7 +681,7 @@ export function toPromptPayload(request: NarrativeRequest) {
       })
       .filter(draft => !!draft.content),
     supersededDelayedReplies: request.supersededIntents
-      .filter(intent => intent.type !== 'split-message')
+      .filter(intent => intent.type !== 'split-message' && intent.type !== 'delivery-retry')
       .map(intent => ({
       participantId: intent.participantId,
       summary: intent.summary,
@@ -887,6 +889,6 @@ function toCompactionPayload(request: CompactionRequest) {
     arc: request.arc,
     participants: request.participants.map(participant => participantPromptPayload(participant, false)),
     existingFacts: request.facts.map(fact => ({ participantId: fact.participantId, scope: fact.scope, content: fact.content, importance: fact.importance, confidence: fact.confidence, unresolved: fact.unresolved })),
-    entries: request.entries.map(entry => ({ id: entry.id, participantId: entry.participantId, kind: entry.kind, actor: entry.actor, content: entry.content, occurredAt: entry.occurredAt.toISOString() })),
+    entries: request.entries.map(entry => ({ id: entry.id, participantId: entry.participantId, kind: entry.kind, actor: entry.actor, content: entry.content, occurredAt: entry.occurredAt.toISOString(), ...(entry.delivery === 'pending' || entry.delivery === 'failed' ? { delivery: 'not-delivered' } : {}) })),
   }
 }

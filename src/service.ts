@@ -9,7 +9,7 @@ import { createCompactor, createNarrator, hasAnthropicCredentials } from './narr
 import { Logger, Runtime, MessageSession as Session, Time } from './runtime'
 import { AutoAdvanceConfig, activeRestWindow, clockMinutes, automaticIntervalMinutes, groupDueIntents, normalizeFollowUpMinutes, scheduleConversationFollowUps } from './schedule'
 import { AUDIENCE_TABLES, isTransientDatabaseError, normalizeContinuitySnapshot, mergeParticipantState, mergeSetting, narrativeCursor, normalizeDatabaseRow, normalizeParticipantState, normalizeStoryState, participantRelevance } from './state'
-import { TelegramEnvironment, isAllowedTelegramSession, readTelegramEnvironment, telegramChatId } from './adapters/telegram-private'
+import { SendFailure, TelegramEnvironment, classifySendFailure, isAllowedTelegramSession, readTelegramEnvironment, telegramChatId } from './adapters/telegram-private'
 import type { InboundEvent, ReplyHandle } from './router/events'
 import { resolveTier } from './router/tiers'
 import { Audience, ClassifiedAudience, Viewer, derivedAudience, normalizeAudience, visitorAudience } from './memory/audience'
@@ -19,7 +19,7 @@ import { publicDigestRequest, publicNarrativeRequest } from './context/public'
 import { resolve } from 'node:path'
 import { calendarDayKey, formatLogTime, localClockMinutes } from './time'
 import { EXPIRED_PLACEHOLDER, consolidationRequest, duplicateMerges, validSupersessions, visitorExpiryCutoff } from './memory/consolidate'
-import { AgencyConfig, AgencyWindowState, AlterSystemConfig, AlterSystemState, AutomaticDeliverySummary, CompactionDecision, EmotionalOffsetPrompt, FactDraft, FollowUpCommitmentDraft, FollowUpResolutionDraft, GroupContext, GroupMessageContext, IntentDraft, InterludeArc, InterludeParticipant, InterludeScene, InterludeStory, NarrativeCompactor, NarrativeDecision, NarrativeFact, NarrativeImage, NarrativeIntent, NarrativeInteraction, NarrativeProvider, NarrativeRequest, OutgoingMessageDraft, OverlaySnapshot, ParticipantState, PublicDigestDecision, ProactiveContactDraft, ScriptEntry, ScriptEntryDraft, StatePatchDraft, StatePatchProposal, StorySetting, StoryState, WebObservation, emptyParticipantState, emptyStorySetting, emptyStoryState } from './types'
+import { AgencyConfig, AgencyWindowState, AlterSystemConfig, AlterSystemState, AutomaticDeliverySummary, CompactionDecision, DeliveryState, EmotionalOffsetPrompt, FactDraft, FollowUpCommitmentDraft, FollowUpResolutionDraft, GroupContext, GroupMessageContext, IntentDraft, InterludeArc, InterludeParticipant, InterludeScene, InterludeStory, NarrativeCompactor, NarrativeDecision, NarrativeFact, NarrativeImage, NarrativeIntent, NarrativeInteraction, NarrativeProvider, NarrativeRequest, OutgoingMessageDraft, OverlaySnapshot, ParticipantState, PublicDigestDecision, ProactiveContactDraft, ScriptEntry, ScriptEntryDraft, StatePatchDraft, StatePatchProposal, StorySetting, StoryState, WebObservation, emptyParticipantState, emptyStorySetting, emptyStoryState } from './types'
 import { clampNumber, clip, isRecord, normalizeFact, sameTimestamp, toDate } from './util'
 import { normalizeBrowserIntentDraft } from './web-policy'
 import { WebObserver } from './web-observer'
@@ -55,6 +55,21 @@ interface BufferedNarrativeTurn {
   inFlightRequestId?: number
   firstMessageCommittedRequestId?: number
   obsoleteRequestIds: Set<number>
+}
+
+/** Already-decided text waiting for transport; never handed to the narrator. */
+const TRANSPORT_INTENT_TYPES = ['split-message', 'delivery-retry']
+const isTransportIntent = (intent: Pick<NarrativeIntent, 'type'>) => TRANSPORT_INTENT_TYPES.includes(intent.type)
+/** A message that cannot be resent within this window is recorded as never delivered. */
+const DELIVERY_RETRY_WINDOW = 30 * Time.minute
+const FOLLOW_UP_MAX_CHECKS = 5
+
+/** A spoken promise past its deadline (legacy rows: created + 24h) or rechecked too often stops being scheduled. */
+function isStaleFollowUp(intent: NarrativeIntent, now: Date) {
+  if (intent.type !== 'follow-up-commitment') return false
+  const expiresAt = toDate(intent.payload?.expiresAt) ?? new Date((toDate(intent.createdAt) ?? now).getTime() + 24 * Time.hour)
+  const checks = Number(intent.payload?.deferredChecks ?? 0) + Number(intent.payload?.reschedules ?? 0)
+  return expiresAt <= now || checks >= FOLLOW_UP_MAX_CHECKS
 }
 
 interface BufferedGroupTurn {
@@ -1390,7 +1405,7 @@ export class InterludeService {
         // transport while another relationship is waiting, but an incoming
         // message from its own participant still interrupts it first.
         const pendingDue = await this.dueIntents(story.id, new Date())
-        const deliveryOnly = pendingDue.length > 0 && pendingDue.every(intent => intent.type === 'split-message')
+        const deliveryOnly = pendingDue.length > 0 && pendingDue.every(isTransportIntent)
         if (!deliveryOnly) {
           this.reportOperation('diagnostic', 'debug', story, 'advance', '后台扫描跳过：前台消息回合或合并计时器仍在处理中')
           return
@@ -1418,44 +1433,16 @@ export class InterludeService {
     // Deliver at most one split segment per wake-up. If the scheduler was
     // blocked for a while, sending every overdue segment together would skip
     // the configured typing-time simulation.
-    const splitSegments = due
-      .filter(intent => intent.type === 'split-message')
+    const transport = due
+      .filter(isTransportIntent)
       .sort((left, right) => left.notBefore.getTime() - right.notBefore.getTime())
       .slice(0, 1)
     let splitHandled = false
-    for (const intent of splitSegments) {
-      const content = clip(intent.payload?.content, this.config.runtime.maxMessageCharacters)
-      const automaticDelivery = automaticDeliveryFromPayload(intent.payload)
-      const participant = intent.participantId ? await this.getParticipant(intent.participantId) : undefined
-      if (intent.participantId && this.interruptedTypingParticipants.has(intent.participantId)) continue
-      splitHandled = true
-      if (!content || !participant || participant.status !== 'active') {
-        await this.dbSet('interlude_intent', { id: intent.id }, { status: 'cancelled', updatedAt: now })
-        continue
-      }
-      const delivered = await this.sendOutgoingMessages(
-        story,
-        [{ participantId: participant.id, content, automaticDelivery }],
-        undefined,
-        undefined,
-        target => this.interruptedTypingParticipants.has(target.id),
-      )
-      if (!delivered.length) {
-        if (this.interruptedTypingParticipants.has(participant.id)) continue
-        const retryAt = new Date(now.getTime() + 30 * Time.second)
-        await this.dbSet('interlude_intent', { id: intent.id }, { notBefore: retryAt, updatedAt: now })
-        this.scheduleDueIntentWake(story.id, retryAt)
-        continue
-      }
-      await this.appendEntry(story.id, {
-        kind: 'character-message', actor: 'character', content,
-        occurredAt: now.toISOString(), metadata: { visible: true, splitSegment: true },
-      }, now, participant.id, this.sourceAudience(participant))
-      await this.recordCharacterMessage(participant, now)
-      await this.dbSet('interlude_intent', { id: intent.id }, { status: 'completed', updatedAt: now })
+    for (const intent of transport) {
+      if (await this.deliverTransportIntent(story, intent, now) === 'done') splitHandled = true
     }
     if (splitHandled) await this.scheduleNextSplitWake(story.id)
-    due = due.filter(intent => intent.type !== 'split-message')
+    due = due.filter(intent => !isTransportIntent(intent))
     // Browser research is an external, already-happened observation once it
     // completes. It must never be handed to the narrator as an ordinary
     // future plan, otherwise the model could write as if it had read a page
@@ -1481,7 +1468,7 @@ export class InterludeService {
     const pausedForConversation = this.isAutomaticAdvancePaused(story, now)
     this.reportOperation('diagnostic', 'debug', story, 'advance',
       '后台状态 到期计划=%d 分段消息=%d 网页任务=%d 短期跟进=%d 自动推进到期=%s 对话暂停=%s',
-      due.length, splitSegments.length, browserIntents.length, dueFollowUps.length, automaticDue, pausedForConversation)
+      due.length, transport.length, browserIntents.length, dueFollowUps.length, automaticDue, pausedForConversation)
     // A due typing segment can be delivered during the conversation pause;
     // it is already a committed message, not an automatic life update.
     if (!force && !due.length && (!automaticDue || pausedForConversation)) return messages
@@ -2178,10 +2165,11 @@ export class InterludeService {
       const [first, ...later] = this.splitOutgoingMessage(message.content)
       if (!first) continue
       message.content = first
-      await this.appendEntry(story.id, {
+      const entry = await this.appendEntry(story.id, {
         kind: 'character-message', actor: 'character', content: first,
         occurredAt: now.toISOString(), metadata: { visible: true, interaction: interaction ?? null },
       }, now, message.participantId, this.sourceAudience(allParticipants.find(item => item.id === message.participantId)))
+      message.entryId = entry.id
       const target = allParticipants.find(item => item.id === message.participantId)
       if (target) await this.recordCharacterMessage(target, now)
       // The narrator may have spent tens of seconds generating before this
@@ -2305,7 +2293,8 @@ export class InterludeService {
     const created = await this.dbCreate('interlude_script_entry', {
       storyId, participantId, kind: clip(entry.kind, 32) || 'life', actor: clip(entry.actor ?? 'character', 32),
       content: clip(entry.content, 12_000), occurredAt,
-      metadata: isRecord(entry.metadata) ? entry.metadata : {}, audience: normalizeAudience(audience), createdAt: now,
+      metadata: isRecord(entry.metadata) ? entry.metadata : {}, ...(entry.delivery ? { delivery: entry.delivery } : {}),
+      audience: normalizeAudience(audience), createdAt: now,
     })
     // Scene entry counts are derived during compaction. Avoiding a second
     // SQLite write here keeps every durable script append atomic and cheap.
@@ -2435,8 +2424,18 @@ export class InterludeService {
     if (expiredAgency.length) {
       await this.dbSet('interlude_intent', { id: { $in: expiredAgency.map(intent => intent.id) } }, { status: 'cancelled', updatedAt: now })
     }
+    await this.retireStaleFollowUps(storyId, now)
     const expiredIds = new Set(expiredAgency.map(intent => intent.id))
-    return intents.filter(intent => !expiredIds.has(intent.id) && !isActiveConsequence(intent))
+    return intents.filter(intent => !expiredIds.has(intent.id) && !isStaleFollowUp(intent, now) && !isActiveConsequence(intent))
+  }
+
+  /** Cancelled only means no longer scheduled; it does not claim the promise was kept or that the user was told. */
+  private async retireStaleFollowUps(storyId: string, now: Date) {
+    const pending = await this.dbGet('interlude_intent', { storyId, type: 'follow-up-commitment', status: 'pending' }) as NarrativeIntent[]
+    const stale = pending.filter(intent => isStaleFollowUp(intent, now))
+    if (!stale.length) return
+    await this.dbSet('interlude_intent', { id: { $in: stale.map(intent => intent.id) } }, { status: 'cancelled', updatedAt: now })
+    this.reportStandaloneOperation('standard', 'info', '承诺回访已过期或重查次数过多，停止调度 数量=%d', stale.length)
   }
 
   /** Wake the scheduler close to a short typing delay instead of waiting for
@@ -2459,7 +2458,7 @@ export class InterludeService {
         // Split segments are already committed transport events. Deliver them
         // through the story queue directly; do not make them wait for the
         // five-minute sweep or start another narrator request.
-        if (due.length && due.every(intent => intent.type === 'split-message')) {
+        if (due.length && due.every(isTransportIntent)) {
           await this.deliverDueSplitSegments(storyId)
           return
         }
@@ -2478,85 +2477,184 @@ export class InterludeService {
   }
 
   private async scheduleNextSplitWake(storyId: string) {
-    const pending = await this.dbGet('interlude_intent', { storyId, status: 'pending', type: 'split-message' }, {
+    const pending = await this.dbGet('interlude_intent', { storyId, status: 'pending', type: { $in: TRANSPORT_INTENT_TYPES } }, {
       sort: { notBefore: 'asc' }, limit: 1,
     })
     const next = pending[0]
     if (next) this.scheduleDueIntentWake(storyId, next.notBefore)
   }
 
-  /** Deliver already-decided <sep/> segments without invoking the narrator. */
+  /** Deliver already-decided <sep/> segments and resends without invoking the narrator. */
   private async deliverDueSplitSegments(storyId: string) {
     await this.serial(storyId, async () => {
       const story = await this.getStory(storyId)
       const now = new Date()
       const due = await this.dbGet('interlude_intent', {
-        storyId, status: 'pending', type: 'split-message', notBefore: { $lte: now },
-      }, { sort: { notBefore: 'asc' }, limit: 20 })
+        storyId, status: 'pending', type: { $in: TRANSPORT_INTENT_TYPES }, notBefore: { $lte: now },
+      }, { sort: { notBefore: 'asc' }, limit: 20 }) as NarrativeIntent[]
       const next = due[0]
-      if (next) {
-        const intent = next
-          const content = clip(intent.payload?.content, this.config.runtime.maxMessageCharacters)
-          const automaticDelivery = automaticDeliveryFromPayload(intent.payload)
-        const participant = intent.participantId ? await this.getParticipant(intent.participantId) : undefined
-        if (intent.participantId && this.interruptedTypingParticipants.has(intent.participantId)) {
-          // The incoming-message transaction is queued behind this one. Leave
-          // every split intent pending so it can cancel them and carry their
-          // exact draft contents into the replacement writing request.
-          return
-        }
-        if (!content || !participant || participant.status !== 'active') {
-          await this.dbSet('interlude_intent', { id: intent.id }, { status: 'cancelled', updatedAt: now })
-        } else {
-          // Start transport while still holding the story queue. Input that
-          // arrived before this point sets interruptedTypingParticipants and
-          // cancels the chain; input after this point cannot retract a message
-          // whose adapter send has already begun.
-          const delivered = await this.sendOutgoingMessages(
-            story,
-            [{ participantId: participant.id, content, automaticDelivery }],
-            undefined,
-            undefined,
-            target => this.interruptedTypingParticipants.has(target.id),
-          )
-          if (!delivered.length) {
-            if (this.interruptedTypingParticipants.has(participant.id)) return
-            const retryAt = new Date(now.getTime() + 30 * Time.second)
-            await this.dbSet('interlude_intent', { id: intent.id }, { notBefore: retryAt, updatedAt: now })
-            this.scheduleDueIntentWake(storyId, retryAt)
-            return
-          }
-          await this.appendEntry(storyId, {
-            kind: 'character-message', actor: 'character', content,
-            occurredAt: now.toISOString(), metadata: { visible: true, splitSegment: true },
-          }, now, participant.id, this.sourceAudience(participant))
-          await this.recordCharacterMessage(participant, now)
-          await this.dbSet('interlude_intent', { id: intent.id }, { status: 'completed', updatedAt: now })
-        }
-      }
+      // The incoming-message transaction is queued behind this one. Leave
+      // every split intent pending so it can cancel them and carry their
+      // exact draft contents into the replacement writing request.
+      if (next && await this.deliverTransportIntent(story, next, now) === 'interrupted') return
       // When several segments became overdue together, restore a fresh
-      // typing interval instead of immediately draining the backlog.
-      const remaining = due.slice(1)
-      if (remaining.length) {
-        const following = remaining[0]
-        if (following.notBefore <= now) {
-          const followingContent = clip(following.payload?.content, this.config.runtime.maxMessageCharacters)
-          if (followingContent) {
-            await this.dbSet('interlude_intent', { id: following.id }, {
-              notBefore: new Date(now.getTime() + this.typingDelayMilliseconds(followingContent)), updatedAt: now,
-            })
-          }
-        }
+      // typing interval instead of immediately draining the backlog. After a
+      // failure the following segments were already moved behind the resend.
+      // Every overdue one moves, in order, so a later bubble cannot overtake.
+      let at = now.getTime()
+      for (const following of next?.status === 'completed' ? due.slice(1) : []) {
+        if (following.notBefore > now) break
+        const followingContent = clip(following.payload?.content, this.config.runtime.maxMessageCharacters)
+        if (!followingContent) continue
+        at += this.typingDelayMilliseconds(followingContent)
+        await this.dbSet('interlude_intent', { id: following.id }, { notBefore: new Date(at), updatedAt: now })
       }
       await this.scheduleNextSplitWake(storyId)
     })
   }
 
+  /**
+   * Sends one split segment or resend. Runs inside the story queue: input that
+   * arrived before this point sets interruptedTypingParticipants and cancels
+   * the chain; input after it cannot retract a send that has already begun.
+   * Marks the intent object completed when the text was delivered.
+   */
+  private async deliverTransportIntent(story: InterludeStory, intent: NarrativeIntent, now: Date): Promise<'done' | 'interrupted'> {
+    if (intent.participantId && this.interruptedTypingParticipants.has(intent.participantId)) return 'interrupted'
+    const content = clip(intent.payload?.content, this.config.runtime.maxMessageCharacters)
+    const participant = intent.participantId ? await this.getParticipant(intent.participantId) : undefined
+    if (!content || !participant || participant.status !== 'active') {
+      await this.dbSet('interlude_intent', { id: intent.id }, { status: 'cancelled', updatedAt: now })
+      if (intent.type === 'delivery-retry') await this.setEntryDelivery(intent.payload?.entryId, 'failed')
+      return 'done'
+    }
+    const outcome: { failure?: SendFailure } = {}
+    const delivered = await this.sendOutgoingMessages(
+      story,
+      [{ participantId: participant.id, content, automaticDelivery: automaticDeliveryFromPayload(intent.payload) }],
+      undefined,
+      undefined,
+      target => this.interruptedTypingParticipants.has(target.id),
+      async (_message, failure) => { outcome.failure = failure },
+    )
+    if (!delivered.length) {
+      if (!outcome.failure) return 'interrupted'
+      await this.handleTransportFailure(story, intent, participant, outcome.failure, now)
+      return 'done'
+    }
+    if (intent.type === 'delivery-retry') {
+      await this.setEntryDelivery(intent.payload?.entryId, 'sent')
+      this.reportOperation('standard', 'info', story, 'intent-due', '补发成功 参与者=%s 第%d次重试', participant.id, Number(intent.payload?.attempts ?? 0) + 1)
+    } else {
+      await this.appendEntry(story.id, {
+        kind: 'character-message', actor: 'character', content,
+        occurredAt: now.toISOString(), metadata: { visible: true, splitSegment: true },
+      }, now, participant.id, this.sourceAudience(participant))
+      await this.recordCharacterMessage(participant, now)
+    }
+    await this.dbSet('interlude_intent', { id: intent.id }, { status: 'completed', updatedAt: now })
+    intent.status = 'completed'
+    return 'done'
+  }
+
+  /** Backs off a resend (1, 2, 4, 8 minutes) until DELIVERY_RETRY_WINDOW, then records the outcome. */
+  private async handleTransportFailure(story: InterludeStory, intent: NarrativeIntent, participant: InterludeParticipant, failure: SendFailure, now: Date) {
+    const firstFailedAt = toDate(intent.payload?.firstFailedAt) ?? now
+    const attempts = Number(intent.payload?.attempts ?? 0) + 1
+    if (failure === 'retryable' && now.getTime() - firstFailedAt.getTime() < DELIVERY_RETRY_WINDOW) {
+      const notBefore = new Date(now.getTime() + Math.min(8, 2 ** (attempts - 1)) * Time.minute)
+      await this.dbSet('interlude_intent', { id: intent.id }, {
+        notBefore, payload: { ...intent.payload, attempts, firstFailedAt: firstFailedAt.toISOString() }, updatedAt: now,
+      })
+      await this.deferSplitChain(story.id, participant.id, notBefore, now, intent.id)
+      this.scheduleDueIntentWake(story.id, notBefore)
+      this.reportOperation('standard', 'warn', story, 'intent-due', '消息暂时发不出去，稍后补发 参与者=%s 下次=%s', participant.id, formatLogTime(notBefore, story.setting.timezone))
+      return
+    }
+    const final: DeliveryState = failure === 'unknown' ? 'unknown' : 'failed'
+    await this.dbSet('interlude_intent', { id: intent.id }, { status: final === 'unknown' ? 'completed' : 'cancelled', updatedAt: now })
+    if (intent.type === 'delivery-retry') await this.setEntryDelivery(intent.payload?.entryId, final)
+    else {
+      await this.appendEntry(story.id, {
+        kind: 'character-message', actor: 'character', content: clip(intent.payload?.content, this.config.runtime.maxMessageCharacters),
+        occurredAt: now.toISOString(), metadata: { visible: true, splitSegment: true }, delivery: final,
+      }, now, participant.id, this.sourceAudience(participant))
+    }
+    if (final === 'failed') await this.failSplitChain(story, participant, now)
+    this.report('warn', story, 'intent-due', final === 'failed' ? '消息最终未送达 参与者=%s' : '消息送达结果未知，不再重发 参与者=%s', participant.id)
+  }
+
+  /**
+   * Default failure handling for a message whose script entry was written
+   * before sending. Called outside the story queue, so it takes the queue.
+   */
+  private async handleCommittedDeliveryFailure(story: InterludeStory, message: OutgoingMessageDraft, failure: SendFailure) {
+    const entryId = message.entryId
+    if (!entryId) return
+    await this.serial(story.id, async () => {
+      const now = new Date()
+      const participant = await this.getParticipant(message.participantId)
+      if (failure !== 'retryable' || !participant) {
+        await this.setEntryDelivery(entryId, failure === 'unknown' ? 'unknown' : 'failed')
+        if (failure !== 'unknown' && participant) await this.failSplitChain(story, participant, now)
+        this.report('warn', story, 'intent-due', failure === 'unknown' ? '消息送达结果未知，不重发 参与者=%s' : '消息未送达 参与者=%s', message.participantId)
+        return
+      }
+      const notBefore = new Date(now.getTime() + Time.minute)
+      await this.setEntryDelivery(entryId, 'pending')
+      await this.appendIntent(story.id, {
+        type: 'delivery-retry', summary: 'An already-written message is waiting to be resent.', notBefore: notBefore.toISOString(),
+        payload: {
+          entryId, content: message.content, attempts: 1, firstFailedAt: now.toISOString(),
+          ...(message.automaticDelivery ? { automaticDelivery: message.automaticDelivery } : {}),
+        },
+      }, now, participant.id)
+      await this.deferSplitChain(story.id, participant.id, notBefore, now)
+      this.scheduleDueIntentWake(story.id, notBefore)
+      this.reportOperation('standard', 'warn', story, 'intent-due', '消息暂时发不出去，1 分钟后补发 参与者=%s', participant.id)
+    })
+  }
+
+  private async setEntryDelivery(entryId: unknown, delivery: DeliveryState) {
+    if (!Number.isSafeInteger(entryId)) return
+    await this.dbSet('interlude_script_entry', { id: entryId }, { delivery })
+  }
+
+  /** Keeps bubble order: later <sep/> segments wait until after the resend. */
+  private async deferSplitChain(storyId: string, participantId: string, after: Date, now: Date, excludeId?: number) {
+    const pending = (await this.dbGet('interlude_intent', { storyId, participantId, status: 'pending', type: 'split-message' }, {
+      sort: { notBefore: 'asc' },
+    }) as NarrativeIntent[]).filter(intent => intent.id !== excludeId)
+    if (!pending.length || pending[0].notBefore > after) return
+    const shift = after.getTime() - pending[0].notBefore.getTime() + Time.second
+    for (const intent of pending) {
+      await this.dbSet('interlude_intent', { id: intent.id }, { notBefore: new Date(intent.notBefore.getTime() + shift), updatedAt: now })
+    }
+  }
+
+  /** After a definite failure the rest of the reply is not sent either; the script records it as undelivered. */
+  private async failSplitChain(story: InterludeStory, participant: InterludeParticipant, now: Date) {
+    const pending = await this.dbGet('interlude_intent', { storyId: story.id, participantId: participant.id, status: 'pending', type: 'split-message' }, {
+      sort: { notBefore: 'asc' },
+    }) as NarrativeIntent[]
+    for (const intent of pending) {
+      await this.dbSet('interlude_intent', { id: intent.id }, { status: 'cancelled', updatedAt: now })
+      const content = clip(intent.payload?.content, this.config.runtime.maxMessageCharacters)
+      if (!content) continue
+      await this.appendEntry(story.id, {
+        kind: 'character-message', actor: 'character', content,
+        occurredAt: now.toISOString(), metadata: { visible: true, splitSegment: true }, delivery: 'failed',
+      }, now, participant.id, this.sourceAudience(participant))
+    }
+  }
+
   /** Pending spoken promises are intentionally tiny and relationship-local. */
   private async pendingFollowUpCommitments(storyId: string, participantId: string) {
-    return this.dbGet('interlude_intent', {
+    const now = new Date()
+    const rows = await this.dbGet('interlude_intent', {
       storyId, participantId, type: 'follow-up-commitment', status: 'pending',
-    }, { limit: 2, sort: { notBefore: 'asc' } }) as Promise<NarrativeIntent[]>
+    }, { sort: { notBefore: 'asc' } }) as NarrativeIntent[]
+    return rows.filter(intent => !isStaleFollowUp(intent, now)).slice(0, 2)
   }
 
   private async appendFollowUpCommitment(
@@ -2566,9 +2664,9 @@ export class InterludeService {
     fallbackSourceEntryId: number | undefined,
     now: Date,
   ) {
-    const pending = await this.dbGet('interlude_intent', {
+    const pending = (await this.dbGet('interlude_intent', {
       storyId: story.id, participantId, type: 'follow-up-commitment', status: 'pending',
-    }, { limit: 3, sort: { notBefore: 'asc' } }) as NarrativeIntent[]
+    }, { sort: { notBefore: 'asc' } }) as NarrativeIntent[]).filter(intent => !isStaleFollowUp(intent, now)).slice(0, 3)
     const key = normalizeFollowUpSummary(draft.summary)
     const duplicate = pending.find(intent => normalizeFollowUpSummary(intent.summary) === key)
     if (duplicate || pending.length >= 2) {
@@ -2703,7 +2801,7 @@ export class InterludeService {
     try {
       const intents = await this.dbGet('interlude_intent', { storyId, participantId, status: 'pending' })
       const matching = intents.filter(intent => intent.participantId === participantId && (
-        intent.type === 'split-message'
+        isTransportIntent(intent)
         || cancelPlanned && (intent.type === 'delayed-reply' || intent.type === 'cross-conversation-message')
       ))
       if (!matching.length) {
@@ -2721,6 +2819,12 @@ export class InterludeService {
         this.dueIntentWakeTimers.delete(storyId)
       }
       await this.scheduleNextSplitWake(storyId)
+      // The user is reachable again and the next turn sees the old text as undelivered; do not resend it later.
+      for (const intent of matching) if (intent.type === 'delivery-retry') await this.setEntryDelivery(intent.payload?.entryId, 'failed')
+      if (matching.every(intent => intent.type === 'delivery-retry')) {
+        completed = true
+        return matching
+      }
       const interruptedDrafts = matching
         .filter(intent => intent.type === 'split-message')
         .map(intent => clip(intent.payload?.content, this.config.runtime.maxMessageCharacters))
@@ -2758,6 +2862,8 @@ export class InterludeService {
     current?: InterludeParticipant,
     reply?: ReplyHandle,
     shouldCancel?: (target: InterludeParticipant) => boolean,
+    onFailure: (message: OutgoingMessageDraft, failure: SendFailure) => Promise<void>
+      = (message, failure) => this.handleCommittedDeliveryFailure(story, message, failure),
   ) {
     const delivered: OutgoingMessageDraft[] = []
     if (!messages.length) return delivered
@@ -2771,10 +2877,12 @@ export class InterludeService {
       const target = byId.get(message.participantId)
       if (!target) {
         this.report('warn', story, 'intent-due', '无法投递消息：参与者不存在 %s', message.participantId)
+        await onFailure(message, 'failed')
         continue
       }
       if (!this.canHandleParticipant(target)) {
         this.report('warn', story, 'intent-due', '消息被当前账号白名单拦截 参与者=%s', target.id)
+        await onFailure(message, 'failed')
         continue
       }
       if (shouldCancel?.(target)) {
@@ -2795,6 +2903,7 @@ export class InterludeService {
         const bot = this.findBotForParticipant(target)
         if (!bot) {
           this.report('warn', story, 'intent-due', '没有可用机器人账号投递消息 参与者=%s', target.id)
+          await onFailure(message, 'failed')
           continue
         }
         await bot.sendMessage(target.channelId, message.content)
@@ -2802,6 +2911,8 @@ export class InterludeService {
         if (message.automaticDelivery) await this.recordAutomaticDelivery(story.id, target.id, message.automaticDelivery, new Date())
       } catch (error) {
           this.report('warn', story, 'intent-due', '消息投递失败 参与者=%s 错误=%s', target.id, error)
+          await onFailure(message, classifySendFailure(error)).catch(failure =>
+            this.report('warn', story, 'intent-due', '投递失败记账出错 参与者=%s 错误=%s', target.id, failure))
       }
     }
     return delivered

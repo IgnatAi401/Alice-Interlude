@@ -306,3 +306,23 @@ export function sendRetryDelay(error: unknown, attempt: number) {
   // fetch rejects with TypeError when the connection fails before a response arrives.
   return error instanceof TypeError ? 1000 * 2 ** (attempt - 1) : undefined
 }
+
+/**
+ * What a failed send means for compensation (roadmap 8, 穿插第二档):
+ * retryable — Telegram never accepted it (connection, 429, 5xx), safe to resend;
+ * failed — Telegram refused it for good (other 4xx);
+ * unknown — the request may have landed (timeout), resending risks a duplicate.
+ */
+export type SendFailure = 'retryable' | 'failed' | 'unknown'
+
+export function classifySendFailure(error: unknown): SendFailure {
+  if (error instanceof TelegramApiError) {
+    if (error.code == null) return 'unknown'
+    return error.code === 429 || error.code >= 500 ? 'retryable' : 'failed'
+  }
+  if (error instanceof TypeError) return 'retryable'
+  // Shutdown aborts the pending wait between attempts, or a request whose fate is unknown.
+  if (error instanceof Error && error.name === 'TimeoutError') return 'unknown'
+  if (error instanceof Error && error.name === 'AbortError') return 'retryable'
+  return 'unknown'
+}
