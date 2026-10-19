@@ -1,6 +1,6 @@
 import { DEFAULT_ALTER_SYSTEM_CONFIG } from './alter'
 import { GroupWillingnessConfig } from './group-willingness'
-import { ModelConfig } from './narrator'
+import { MODEL_NAME_PATTERN, ModelConfig } from './narrator'
 import { AgencyConfig, AlterSystemConfig } from './types'
 
 export interface Config {
@@ -360,7 +360,36 @@ function mergeDefaults(defaults: any, input: any, path = 'config'): any {
   return result
 }
 
-export function resolveConfig(input: unknown): Config {
+/**
+ * Model settings may live in the environment (LLM_*) so the provider can be
+ * swapped without touching config.json; set variables override the file.
+ */
+export function applyModelEnvironment(config: Config, env: NodeJS.ProcessEnv) {
+  const text = (name: string) => env[name]?.trim() || undefined
+  const integer = (name: string) => {
+    const value = text(name)
+    if (value === undefined) return undefined
+    if (!/^\d+$/.test(value) || Number(value) < 1) throw new Error(`环境变量 ${name} 必须是正整数。`)
+    return Number(value)
+  }
+  const baseUrl = text('LLM_BASE_URL')
+  if (baseUrl !== undefined) config.model.baseUrl = baseUrl
+  config.model.model = text('LLM_MODEL') ?? config.model.model
+  const compactionModel = text('LLM_COMPACTION_MODEL')
+  if (compactionModel !== undefined && config.model.compaction) config.model.compaction.model = compactionModel
+  const alterModel = text('LLM_ALTER_MODEL')
+  if (alterModel !== undefined && config.alterSystem) config.alterSystem.model = alterModel
+  config.model.mainMaxTokens = integer('LLM_MAX_TOKENS') ?? config.model.mainMaxTokens
+  const timeout = integer('LLM_TIMEOUT_SECONDS')
+  if (timeout !== undefined) config.model.mainTimeout = timeout * 1000
+  const vision = text('LLM_VISION')
+  if (vision !== undefined) {
+    if (!['true', 'false'].includes(vision)) throw new Error('环境变量 LLM_VISION 只能是 true 或 false。')
+    config.model.vision = { enabled: vision === 'true' }
+  }
+}
+
+export function resolveConfig(input: unknown, env: NodeJS.ProcessEnv = {}): Config {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('config 必须是对象。')
   const { memory, ...rest } = input as Record<string, unknown>
   const shared = rest.sharedStory as Record<string, unknown> | undefined
@@ -374,15 +403,23 @@ export function resolveConfig(input: unknown): Config {
       recentEntryLimit: config.runtime.contextEntryLimit, factLimit: config.runtime.memoryLimit }, memory, 'memory')
   }
   if (config.memory?.consolidateAt !== undefined && !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(config.memory.consolidateAt)) throw new Error('memory.consolidateAt 必须是 HH:MM。')
+  applyModelEnvironment(config, env)
   try { new Intl.DateTimeFormat('en-US', { timeZone: config.storyDefaults.timezone }) } catch { throw new Error('storyDefaults.timezone 无效。') }
   for (const model of [config.model.model, config.model.compaction?.model, config.alterSystem?.model]) {
-    if (model?.trim() && !/^claude-[a-z0-9.-]+$/i.test(model)) throw new Error('所有任务仅支持 Claude 模型代码。')
+    if (model?.trim() && !MODEL_NAME_PATTERN.test(model)) throw new Error(`模型名格式无效：${model}`)
+  }
+  if (config.model.baseUrl !== undefined) {
+    let url: URL | undefined
+    try { url = new URL(config.model.baseUrl) } catch {}
+    // Plain http only for a local proxy; the API key must never cross the network unencrypted.
+    const local = url && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)
+    if (!url || !(url.protocol === 'https:' || (url.protocol === 'http:' && local))) throw new Error('LLM_BASE_URL 必须是 https 地址。')
   }
   for (const value of [config.model.mainMaxTokens, config.model.mainTimeout, config.runtime.sweepIntervalMinutes,
     config.model.compaction?.maxTokens, config.model.compaction?.timeout, config.alterSystem?.maxTokens, config.alterSystem?.timeout]) {
     if (!Number.isInteger(value) || value! < 1) throw new Error('token 上限、超时和扫描间隔必须是正整数。')
   }
-  if (!config.model.model.trim()) throw new Error('请填写 Claude 模型名。')
+  if (!config.model.model.trim()) throw new Error('请填写模型名（环境变量 LLM_MODEL）。')
   for (const value of [config.model.mainTemperature, config.model.compaction?.temperature, config.alterSystem?.temperature]) {
     if (value! < 0 || value! > 1) throw new Error('temperature 必须在 0 到 1 之间。')
   }

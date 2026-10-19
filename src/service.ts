@@ -194,7 +194,7 @@ export class InterludeService {
     // Start scheduling after construction finishes.
     ctx.setTimeout(() => this.startBackgroundTasks(), 0)
     this.reportStandaloneOperation('summary', 'info', '服务已就绪')
-    this.reportStandaloneOperation('summary', 'info', '服务初始化完成 Claude=%s 自动推进=%s', hasAnthropicCredentials(config.model) ? '已配置' : '未配置', this.autoAdvanceConfig.enabled)
+    this.reportStandaloneOperation('summary', 'info', '服务初始化完成 模型=%s 自动推进=%s', hasAnthropicCredentials(config.model) ? '已配置' : '未配置', this.autoAdvanceConfig.enabled)
   }
 
   private startBackgroundTasks() {
@@ -372,7 +372,7 @@ export class InterludeService {
     if (!setting.character.name.trim()) blockers.push('storyDefaults.characterName 为空。')
     if (!setting.character.profile.trim()) blockers.push('storyDefaults.characterProfile 尚未填写。')
     try { new Intl.DateTimeFormat('en-US', { timeZone: setting.timezone }) } catch { blockers.push(`时区无效：${setting.timezone}`) }
-    if (!hasAnthropicCredentials(this.config.model)) blockers.push('请配置环境变量 ANTHROPIC_API_KEY 和 Claude 模型名。')
+    if (!hasAnthropicCredentials(this.config.model)) blockers.push('请配置环境变量 LLM_API_KEY 和 LLM_MODEL。')
     if (!setting.perspective.trim()) warnings.push('Perspective 尚未填写；主角将仅使用 Canon 与已有 Overlay。')
     if (!setting.world.trim()) warnings.push('world 尚未填写；建议在 config.json 补充现实边界与地点背景。')
     const existing = await this.findStory(session)
@@ -3148,7 +3148,7 @@ export class InterludeService {
     }
   }
 
-  private mainModelLabel() { return this.config.model.model || '未配置 Claude 模型' }
+  private mainModelLabel() { return this.config.model.model || '未配置模型' }
 
   /** The clean Canon used both by story creation and a full administrative reset. */
   private initialStorySetting(name?: string): StorySetting {

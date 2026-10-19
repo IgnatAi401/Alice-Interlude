@@ -1,6 +1,7 @@
 import { normalizeAudience } from './memory/audience'
 import type { MemoryRef } from './memory/store'
-import { Runtime, MessageSession as Session } from './runtime'
+import { HDS_INTERLUDE_VERSION } from './meta'
+import { HtmlReply, Runtime, MessageSession as Session } from './runtime'
 import { InterludeService } from './service'
 import { StorySetting } from './types'
 
@@ -12,7 +13,7 @@ export function registerCommands(ctx: Runtime, service: InterludeService) {
   const startStoryFromConfig = async (session: Session) => {
     if (!requireManager(service, session)) return '无权限：手动启动共享主剧本只允许主人私聊。'
     const readiness = await service.storyStartReadiness(session)
-    if (readiness.existing) return `当前已有 ${readiness.existing.setting.character.name} 的活动主剧本；请使用 interlude.status 查看状态。`
+    if (readiness.existing) return `当前已有 ${readiness.existing.setting.character.name} 的活动主剧本；请使用 /status 查看状态。`
     if (!readiness.ready) return formatStoryStartReadiness(readiness, 'config.json 档案尚未适合启动')
     const preview = readiness.preview
     const message = [
@@ -31,6 +32,29 @@ export function registerCommands(ctx: Runtime, service: InterludeService) {
     const participant = await service.findParticipant(session, story)
     return `已从 config.json 档案启动 ${story.setting.character.name} 的共享主剧本，并加入 ${participant?.displayName || session.userId}。`
   }
+
+  ctx.command('interlude.start', '检测 Alice 是否在线，并显示运行概况')
+    .action(async ({ session = missingSession() }): Promise<HtmlReply | string> => {
+      if (!requireManager(service, session)) return '当前 Telegram 聊天没有管理权限。'
+      const story = await service.findStory(session)
+      return { html: [
+        `🟢 <b>Alice 在线</b>`,
+        '',
+        `<b>版本</b>　<code>${HDS_INTERLUDE_VERSION}</code>`,
+        `<b>已运行</b>　${formatDuration(process.uptime())}`,
+        `<b>本机时间</b>　${escapeHtml(new Date().toLocaleString('zh-CN', { hour12: false }))}`,
+        `<b>故事</b>　${story ? `${escapeHtml(story.setting.character.name)}（${story.status === 'active' ? '运行中' : story.status === 'paused' ? '已暂停' : escapeHtml(story.status)}）` : '尚未创建'}`,
+        `<b>模型</b>　<code>${escapeHtml(service.config.model.model)}</code>`,
+        '',
+        '<i>发送 /help 查看全部命令。</i>',
+      ].join('\n') }
+    })
+
+  ctx.command('interlude.help [name:string]', '查看全部命令的详细用法；带命令名时只看这一条')
+    .action(async ({ session = missingSession() }, name): Promise<HtmlReply | string> => {
+      if (!requireManager(service, session)) return '当前 Telegram 聊天没有管理权限。'
+      return helpReply(ctx, name)
+    })
 
   ctx.command('interlude.doctor', '检查当前 config.json 档案、权限与模型是否适合启动故事')
     .action(async ({ session = missingSession() }) => formatStoryStartReadiness(await service.storyStartReadiness(session)))
@@ -63,7 +87,7 @@ export function registerCommands(ctx: Runtime, service: InterludeService) {
         `关系人数：${(await service.participants(story.id)).length}`,
         `故事状态：${story.status}`,
         `已写到：${story.cursorAt.toISOString()}`,
-        `模型：Anthropic Messages / ${service.config.model.model}（thinking 关闭）`,
+        `模型：${service.config.model.baseUrl || 'https://api.anthropic.com'} / ${service.config.model.model}（Messages 协议，thinking 关闭）`,
         `允许主动可见消息：${service.config.runtime.allowProactiveMessages ? '开启' : '关闭'}`,
         `Agency Window：${service.config.agency?.enabled === false ? '关闭' : '开启'}（${story.state.agencyWindow?.activityLoad || '尚未建立'}）`,
       ].join('\n')
@@ -236,7 +260,7 @@ export function registerCommands(ctx: Runtime, service: InterludeService) {
   ctx.command('interlude.memory.search <query:text>', '管理员：全文搜索长期事实和剧本条目')
     .action(async ({ session = missingSession() }, query) => {
       if (!requireManager(service, session)) return '当前 Telegram 聊天没有管理权限。'
-      if (!query?.trim()) return '请提供搜索词，例如 /interlude.memory.search 樱花'
+      if (!query?.trim()) return '请提供搜索词，例如 /memory_search 樱花'
       const story = await requireStory(service, session)
       if (typeof story === 'string') return story
       const { facts, entries } = await service.adminSearch(story.id, query)
@@ -259,7 +283,7 @@ export function registerCommands(ctx: Runtime, service: InterludeService) {
         const label = formatMemoryRef(ref)
         const result = await service.setAdminAudience(story.id, ref, audience)
         if (result === 'not-found') return `未找到有效的 ${label}。`
-        if (result === 'visitor') return `${label} 属于访客，受众由程序固定，不能修改；如需删除请用 /interlude.memory.forget。`
+        if (result === 'visitor') return `${label} 属于访客，受众由程序固定，不能修改；如需删除请用 /memory_forget。`
         if (result === 'unchanged') return `${label} 已经是 ${audienceMark(audience)}。`
         const note = audience === 'public' && ref.kind === 'entry' ? '原文会出现在访客和频道回合的上下文中。' : ''
         return `${label} 已改为 ${audienceMark(audience)}。${note}`
@@ -285,7 +309,7 @@ export function registerCommands(ctx: Runtime, service: InterludeService) {
       const story = await requireStory(service, session)
       if (typeof story === 'string') return story
       const records = key ? await service.adminVisitor(story.id, key) : undefined
-      if (!records) return '访客标识无效，应形如 tg:123 或 tg-group:-100123（可用 /interlude.memory.visitors 查看）。'
+      if (!records) return '访客标识无效，应形如 tg:123 或 tg-group:-100123（可用 /memory_visitors 查看）。'
       if (!records.entries.length && !records.facts.length) return `没有 ${records.audience} 的记录。`
       return [
         ...records.entries.map(entry => `e${entry.id} [${entry.occurredAt.toISOString()}] ${entry.actor}/${entry.kind}: ${clip(entry.content, 200)}`),
@@ -419,6 +443,127 @@ export function registerCommands(ctx: Runtime, service: InterludeService) {
     })
 }
 
+/** Telegram menu: owner-only commands, short descriptions (menu shows one line). */
+export function commandMenu(ctx: Runtime) {
+  return ctx.commandList().filter(command => command.menuName).map(command => ({
+    command: command.menuName!,
+    description: shortDescription(command.description).slice(0, 256),
+  }))
+}
+
+function shortDescription(description: string) {
+  return description.replace(/^(?:管理员|高级)：/, '').split('；')[0]
+}
+
+interface CommandDoc { detail?: string; example?: string; confirm?: boolean }
+
+const HELP_SECTIONS: Array<{ title: string; commands: Record<string, CommandDoc> }> = [
+  { title: '🧭 基础', commands: {
+    'interlude.start': { detail: '能收到回复就说明 Bot 在线、长轮询正常。' },
+    'interlude.help': { example: '/help memory_facts' },
+    'interlude.doctor': { detail: '列出阻断项和提示，启动故事前先跑一次。' },
+    'interlude.story.start': { detail: '只在 runtime.autoCreate 关闭时需要。', confirm: true },
+    'interlude.status': {},
+    'interlude.pause': { detail: '暂停后不再自动推进和主动联系；私聊消息照常记录。' },
+    'interlude.resume': {},
+    'interlude.advance': { detail: '立即执行一次后台推进，期间产生的可见消息会发出。' },
+  } },
+  { title: '🔍 查看', commands: {
+    'interlude.timeline': { detail: 'limit 最多 30。', example: '/timeline 20' },
+    'interlude.memory': { detail: 'limit 最多 30。', example: '/memory 5' },
+    'interlude.context': {},
+    'interlude.context.public': { detail: '用来确认访客回合看不到私密内容。' },
+    'interlude.script': { detail: '条目前的 e 编号可用于 forget、public、private。limit 最多 50。', example: '/script 30' },
+    'interlude.exec': { example: '/exec 12' },
+  } },
+  { title: '🧠 记忆', commands: {
+    'interlude.memory.facts': { detail: '条目前的 f 编号可用于 forget、public、private。', example: '/memory_facts 30' },
+    'interlude.memory.search': { example: '/memory_search 樱花' },
+    'interlude.memory.add': { example: '/memory_add promise 周末一起去看海' },
+    'interlude.memory.forget': { detail: '编号写 f12 或 e34；纯数字视为事实。删除剧本条目时会确认。', example: '/memory_forget f12' },
+    'interlude.memory.public': { detail: '公开后，访客和频道回合也能读到。', example: '/memory_public f12' },
+    'interlude.memory.private': { example: '/memory_private e34' },
+    'interlude.memory.visitors': {},
+    'interlude.memory.visitor': { example: '/memory_visitor tg:123456' },
+    'interlude.memory.consolidate': { confirm: true },
+    'interlude.compact': {},
+  } },
+  { title: '📅 计划与设定演化', commands: {
+    'interlude.memory.intents': { detail: '编号可用于 memory_cancel。' },
+    'interlude.memory.cancel': { example: '/memory_cancel 8' },
+    'interlude.memory.patches': { detail: '编号可用于 memory_reject。' },
+    'interlude.memory.reject': { example: '/memory_reject 3' },
+    'interlude.overlay.status': {},
+    'interlude.overlay.compact': {},
+    'interlude.overlay.clear': { detail: 'target 取 character、perspective、relationship、world、all。', example: '/overlay_clear relationship', confirm: true },
+  } },
+  { title: '⚠️ 高级与危险操作', commands: {
+    'interlude.setup': { detail: '参数是一个 JSON 对象，只覆盖给出的字段。', example: '/setup {"perspective":"……"}' },
+    'interlude.script.note': { detail: 'Alice 会按注记行事，但不会提起注记本身。', example: '/script_note 她上周已经搬到了海边' },
+    'interlude.purge.range': { detail: '时间使用 ISO-8601，带时区。', example: '/purge_range 2026-08-01T00:00:00+08:00 2026-08-02T00:00:00+08:00', confirm: true },
+    'interlude.purge.all': { detail: '保留空白主剧本，按当前 config.json 重建 Canon。', confirm: true },
+    'interlude.database.clear': { detail: '清空全部叙事数据，无法恢复。', confirm: true },
+  } },
+]
+
+function helpReply(ctx: Runtime, name?: string): HtmlReply | string {
+  const commands = new Map(ctx.commandList().map(command => [command.name, command]))
+  const docs = new Map(HELP_SECTIONS.flatMap(section => Object.entries(section.commands)))
+  const render = (key: string) => {
+    const command = commands.get(key)
+    if (!command) return ''
+    const doc = docs.get(key) ?? {}
+    const args = command.spec.split(' ').slice(1).map(arg => arg.replace(/:[a-z]+/, '')).join(' ')
+    return [
+      `<b>/${command.menuName}</b>${args ? ` <code>${escapeHtml(args)}</code>` : ''}${doc.confirm ? ' 🔐' : ''}`,
+      escapeHtml(command.description.replace(/^(?:管理员|高级)：/, '')),
+      ...(doc.detail ? [`<i>${escapeHtml(doc.detail)}</i>`] : []),
+      ...(doc.example ? [`例：<code>${escapeHtml(doc.example)}</code>`] : []),
+    ].join('\n')
+  }
+  if (name?.trim()) {
+    const raw = name.trim().replace(/^\//, '').replace(/@\S+$/, '').toLowerCase()
+    const key = commands.has(raw) ? raw : ctx.commandList().find(command => command.menuName === raw || command.name === `interlude.${raw}`)?.name
+    if (!key) return `没有命令 ${raw}。发送 /help 查看全部命令。`
+    return { html: `${render(key)}\n\n<i>也可以写成 /${key}</i>` }
+  }
+  const intro = [
+    '<b>📖 Alice 管理命令</b>',
+    '',
+    '这些命令只在主人私聊中有效，其他聊天发送会被忽略。',
+    '• <code>&lt;参数&gt;</code> 必填，<code>[参数]</code> 可选，发送时不带括号',
+    '• 🔐 表示执行前会询问，60 秒内回复 <code>y</code> 或 <code>n</code>',
+    '• 旧写法 <code>/interlude.memory.facts</code> 与 <code>/memory_facts</code> 等价',
+    '• <code>/help 命令名</code> 只看一条命令',
+  ].join('\n')
+  const listed = new Set(docs.keys())
+  const others = [...commands.keys()].filter(key => !listed.has(key))
+  const sections = [
+    ...HELP_SECTIONS.map(section => ({ title: section.title, keys: Object.keys(section.commands) })),
+    ...(others.length ? [{ title: '其他', keys: others }] : []),
+  ]
+  // Pack sections into as few messages as fit; a section never spans two messages.
+  const messages = [intro]
+  for (const section of sections) {
+    const block = [`<b>${section.title}</b>`, '', section.keys.map(render).filter(Boolean).join('\n\n')].join('\n')
+    const joined = `${messages.at(-1)}\n\n\n${block}`
+    if (joined.length <= 4000) messages[messages.length - 1] = joined
+    else messages.push(block)
+  }
+  return { html: messages }
+}
+
+function escapeHtml(text: string) {
+  return String(text ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
+function formatDuration(seconds: number) {
+  const minutes = Math.floor(seconds / 60), hours = Math.floor(minutes / 60), days = Math.floor(hours / 24)
+  if (days) return `${days} 天 ${hours % 24} 小时`
+  if (hours) return `${hours} 小时 ${minutes % 60} 分钟`
+  return minutes ? `${minutes} 分钟` : `${Math.floor(seconds)} 秒`
+}
+
 async function askConfirmation(session: Session, message: string) {
   await session.send(`${message}\n请在 60 秒内回复 y 或 n。`)
   const answer = await session.prompt(60_000)
@@ -447,7 +592,7 @@ function formatStoryStartReadiness(readiness: import('./service').StoryStartRead
 
 async function requireStory(service: InterludeService, session: Session) {
   if (!service.canHandleSession(session)) return '当前 Telegram 聊天未获授权。请检查环境变量 TELEGRAM_CHAT_IDS。'
-  return await service.findStory(session) ?? '当前私聊还没有故事。请先在 config.json 完成档案，然后执行 interlude.doctor；手动启动请使用 interlude.story.start，或开启 runtime.autoCreate 后直接发送第一条私聊。'
+  return await service.findStory(session) ?? '当前私聊还没有故事。请先在 config.json 完成档案，然后执行 /doctor；手动启动请使用 /story_start，或开启 runtime.autoCreate 后直接发送第一条私聊。'
 }
 
 async function changeStatus(service: InterludeService, session: Session, status: 'active' | 'paused') {

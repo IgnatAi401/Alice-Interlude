@@ -1,6 +1,6 @@
 # 数据与凭据边界
 
-`TELEGRAM_BOT_TOKEN`、`TELEGRAM_CHAT_IDS`、`ALICE_OWNER_CHAT_ID` 和 `ANTHROPIC_API_KEY` 只从环境读取。真实 `.env`、`config.json`、SQLite 数据和依赖目录均不进入版本控制。
+`TELEGRAM_BOT_TOKEN`、`TELEGRAM_CHAT_IDS`、`ALICE_OWNER_CHAT_ID` 和 `LLM_API_KEY`（兼容旧名 `ANTHROPIC_API_KEY`）只从环境读取。`LLM_BASE_URL` 必须是 https（仅本机代理可用 http），避免 key 明文出网；更换模型服务意味着全部私密上下文会发给该服务商。exec 子进程同样拿不到 `LLM_API_KEY`。真实 `.env`、`config.json`、SQLite 数据和依赖目录均不进入版本控制。
 
 Telegram 接收先检查实际 chat id，再下载图片、创建故事或调用模型。私聊和群聊的访问范围均由环境白名单限定，输出同样检查目标白名单。群配置或用户资料不能扩大访问范围。发送失败后的补发（`delivery-retry`）只重发原文给原参与者，每次补发都重新走同一投递入口和白名单检查，不会改换目标。
 
@@ -14,7 +14,7 @@ Anthropic 接收当前叙事需要的角色设定、连续性记录和消息；�
 
 每条消息的信任等级（`owner` / `public`）只在 `src/router/router.ts` 中赋值，判定规则只有 `src/router/tiers.ts` 的 `resolveTier` 一处：渠道必须是 Telegram 私聊，且 chat id 等于 `ALICE_OWNER_CHAT_ID`。适配器产出的事件在类型上不含等级，消息文本不参与判定；网站等其他渠道无论内容如何都是 `public`。`ALICE_OWNER_CHAT_ID` 缺失、不是正整数或不在白名单中时拒绝启动。
 
-管理命令只在 owner 私聊中执行：入口处先拦截（非 owner 不回复），命令内部再检查一次。
+管理命令只在 owner 私聊中执行：入口处先拦截（非 owner 不回复），命令内部再检查一次。Telegram 命令菜单用 `chat` 作用域只注册给 owner 私聊；短名（`/status` 等）只对 owner 视为命令，其他聊天仍按普通消息处理。
 
 工具注册表（`src/capabilities/registry.ts`）有两道检查：构造请求时只暴露当前等级允许的工具；执行前按 `TIER_TOOLS` 能力表再次检查等级，未注册或等级不允许的工具返回错误结果且不执行。能力表为 owner：`exec`、`read_skill`、`recall`；public 与 system：无。工具只在主人私聊的消息回合和命令结果回合提供（`tools.enabled`，默认关闭），回合的等级来自事件，不来自模型输出。
 

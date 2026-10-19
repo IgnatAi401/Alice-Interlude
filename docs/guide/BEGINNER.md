@@ -4,17 +4,17 @@
 
 角色设定包含初始性格、生活背景和表达方式；故事运行后，人物变化会存为 Overlay（累积的设定变化），不会让模型直接覆盖最初的人设。过去的聊天会被整理为场景摘要、长期事实和记忆，避免每次上传全部历史。
 
-示例允许首次私聊自动创建故事。若关闭 `runtime.autoCreate`，先用 `/interlude.doctor` 检查，再用 `/interlude.story.start` 手动创建。
+示例允许首次私聊自动创建故事。若关闭 `runtime.autoCreate`，先用 `/doctor` 检查，再用 `/story_start` 手动创建。
 
 调试时可以依次查看：
 
-1. `/interlude.status`：故事是否启用、当前模型和主动联系设置。
-2. `/interlude.timeline 10`：近期发生了什么。
-3. `/interlude.memory 10`：已有的长期记忆。
-4. `/interlude.context`：场景、事实和设定变化。
+1. `/status`：故事是否启用、当前模型和主动联系设置。
+2. `/timeline 10`：近期发生了什么。
+3. `/memory 10`：已有的长期记忆。
+4. `/context`：场景、事实和设定变化。
 
 角色保持沉默可能是本轮故事的正常选择。白名单不匹配会直接忽略消息；空白名单或缺少凭据会在启动时给出错误。API 失败会按配置安排重试，标准日志不会输出凭据或请求正文。
 
 主动联系默认关闭，开启 `runtime.allowProactiveMessages` 后仍会经过真实生活理由、意愿、设备和隐私条件的判断。自动推进只写当前时间已经发生的生活，不能预写未来。
 
-需要暂停故事时发送 `/interlude.pause`，恢复用 `/interlude.resume`。退出程序用项目终端的 `Ctrl+C`；关机或睡眠期间 Bot 不能工作。
+需要暂停故事时发送 `/pause`，恢复用 `/resume`。退出程序用项目终端的 `Ctrl+C`；关机或睡眠期间 Bot 不能工作。

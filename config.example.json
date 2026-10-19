@@ -8,11 +8,12 @@
     "userProfile": "",
     "relationship": ""
   },
-  "model": {
-    "model": "claude-sonnet-4-6",
-    "mainMaxTokens": 4096,
-    "vision": { "enabled": true }
+  "runtime": {
+    "autoCreate": true,
+    "allowProactiveMessages": false
   },
-  "runtime": { "autoCreate": true, "allowProactiveMessages": false },
-  "telegram": { "userAccounts": [], "groupChats": [] }
+  "telegram": {
+    "userAccounts": [],
+    "groupChats": []
+  }
 }

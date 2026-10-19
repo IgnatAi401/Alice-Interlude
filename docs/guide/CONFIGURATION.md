@@ -9,7 +9,14 @@
 | `TELEGRAM_BOT_TOKEN` | 唯一 Telegram Bot 的 token |
 | `TELEGRAM_CHAT_IDS` | 唯一访问白名单；逗号或空白分隔的完整 chat id |
 | `ALICE_OWNER_CHAT_ID` | 主人私聊的 chat id（正整数），必须在 `TELEGRAM_CHAT_IDS` 中；只有这个私聊能执行管理命令，以后也只有它能使用电脑操控工具 |
-| `ANTHROPIC_API_KEY` | 所有 Claude 请求共同使用的官方 API key |
+| `LLM_BASE_URL` | 模型服务地址，留空为 Anthropic 官方；DeepSeek 填 `https://api.deepseek.com/anthropic`。必须是 https |
+| `LLM_API_KEY` | 模型服务的 API key（旧名 `ANTHROPIC_API_KEY` 仍可用） |
+| `LLM_MODEL` | 主模型，如 `claude-sonnet-5-5`、`deepseek-flash`、`deepseek-v4-pro` |
+| `LLM_COMPACTION_MODEL`、`LLM_ALTER_MODEL` | 压缩/整理、氛围分析用的模型，留空复用主模型 |
+| `LLM_MAX_TOKENS`、`LLM_TIMEOUT_SECONDS` | 主叙事输出上限与超时（秒） |
+| `LLM_VISION` | `true`/`false`，是否把图片发给模型 |
+
+`LLM_*` 填了就优先于 `config.json` 的 `model` 设置，没填的项继续用 `config.json` 或默认值。
 
 私聊 ID 为正整数，群聊 ID 为负整数。`config.json` 中的资料和群配置不授予环境白名单以外的访问权。消息接收、附件下载和发送都会检查白名单。
 
@@ -24,7 +31,6 @@
     "location": "新加坡",
     "timezone": "Asia/Singapore"
   },
-  "model": { "model": "claude-sonnet-4-6", "mainMaxTokens": 4096 },
   "runtime": { "autoCreate": true, "allowProactiveMessages": false }
 }
 ```
@@ -52,11 +58,11 @@
 
 管理命令只允许 `ALICE_OWNER_CHAT_ID` 对应的私聊执行，其他私聊和群聊发送的管理命令会被静默忽略。旧版的 `sharedStory.managerAccounts` 已移除，配置中保留该项会导致启动报错。群聊 `responseMode` 可设为 `always`；默认 `mention-only`。群意愿累积可用 `willingness.enabled` 单独开启。
 
-## Claude
+## 模型
 
-`model.model` 填 Claude 模型代码。主叙事可调 `mainMaxTokens`、`mainTimeout`（毫秒）和 `mainTemperature`（0 到 1），以及 `mainPrompt`、`fixedPrompt`、`formatPrompt`、`stylePrompt`。
+常用设置建议放 `.env`（见上表）。`config.json` 中对应 `model.baseUrl`、`model.model`，主叙事可调 `mainMaxTokens`、`mainTimeout`（毫秒）和 `mainTemperature`（0 到 1），以及 `mainPrompt`、`fixedPrompt`、`formatPrompt`、`stylePrompt`。
 
-记忆与 Overlay 压缩使用 `model.compaction` 的 `model`、`maxTokens`、`timeout`、`temperature`。`alterSystem` 可单独设分析模型；留空复用主模型。所有任务均使用 Messages API，thinking 固定关闭，不提供服务商、协议或推理强度选择。
+记忆与 Overlay 压缩使用 `model.compaction` 的 `model`、`maxTokens`、`timeout`、`temperature`。`alterSystem` 可单独设分析模型；留空复用主模型。所有任务都走 Anthropic Messages 协议，thinking 固定关闭；服务商只要兼容这一协议即可更换。DeepSeek 会忽略缓存断点（不影响结果，只是没有缓存折扣）。
 
 视觉通过 `model.vision.enabled` 开关，图片采用 Anthropic 原生 base64 格式。
 

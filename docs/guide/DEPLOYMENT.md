@@ -2,7 +2,7 @@
 
 ## 1. 创建 Bot
 
-在 Telegram 的官方 `@BotFather` 对话中用 `/newbot` 创建机器人，保存它给出的 token。Anthropic API key 在自己的 Anthropic Console 创建。
+在 Telegram 的官方 `@BotFather` 对话中用 `/newbot` 创建机器人，保存它给出的 token。模型 API key 在对应服务商的控制台创建（Anthropic Console，或 DeepSeek 开放平台）。
 
 项目终端中执行：
 
@@ -12,7 +12,7 @@ cp .env.example .env
 cp config.example.json config.json
 ```
 
-填写 `.env` 的 `TELEGRAM_BOT_TOKEN` 和 `ANTHROPIC_API_KEY`。不要把实际 `.env` 发给别人。
+填写 `.env` 的 `TELEGRAM_BOT_TOKEN`，以及 `LLM_BASE_URL`、`LLM_API_KEY`、`LLM_MODEL`。不要把实际 `.env` 发给别人。
 
 ## 2. 获取 chat id
 
@@ -39,14 +39,14 @@ JS
 
 ## 3. 填角色并运行
 
-编辑 `config.json` 中的 `storyDefaults.characterProfile`，把示例文字替换成角色背景、性格和日常生活。默认示例模型为 `claude-sonnet-4-6`，也可以填写自己有权限使用的 Claude 模型代码。
+编辑 `config.json` 中的 `storyDefaults.characterProfile`，把示例文字替换成角色背景、性格和日常生活。模型在 `.env` 的 `LLM_MODEL` 中填写。
 
 ```sh
 pnpm build
 pnpm start
 ```
 
-看到连接日志后，在已获授权的私聊中发送消息或 `/interlude.doctor`。角色是否立即回复、延迟回复或保持沉默，由原有叙事逻辑决定。
+看到连接日志后，在已获授权的私聊中发送消息或 `/doctor`。角色是否立即回复、延迟回复或保持沉默，由原有叙事逻辑决定。
 
 ## 4. 停止和重启
 

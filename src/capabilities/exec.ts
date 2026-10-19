@@ -153,7 +153,7 @@ export function createExecTool(store: ApprovalStore, ttlMinutes: () => number): 
 
 export interface CommandResult { exitCode: number | null; signal: string | null; timedOut: boolean; output: string }
 
-/** Only these variables reach the child; secrets such as ANTHROPIC_API_KEY and TELEGRAM_BOT_TOKEN never do (S8). */
+/** Only these variables reach the child; secrets such as LLM_API_KEY, ANTHROPIC_API_KEY and TELEGRAM_BOT_TOKEN never do (S8). */
 const ENV_ALLOWLIST = ['PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TMPDIR', 'TZ'] as const
 
 export function commandEnvironment(source: NodeJS.ProcessEnv = process.env) {

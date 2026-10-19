@@ -128,10 +128,10 @@ export class TelegramBot implements BotTransport {
    * limits, server errors and connection failures. A timeout is not retried
    * because the message may already have been delivered.
    */
-  private async sendChunk(chatId: string, text: string) {
+  private async sendChunk(chatId: string, text: string, extra: Record<string, unknown> = {}) {
     for (let attempt = 1; ; attempt++) {
       try {
-        return await this.api<{ message_id: number }>('sendMessage', { chat_id: chatId, text })
+        return await this.api<{ message_id: number }>('sendMessage', { chat_id: chatId, text, ...extra })
       } catch (error) {
         const wait = sendRetryDelay(error, attempt)
         if (wait == null || this.controller.signal.aborted) throw error
@@ -156,6 +156,24 @@ export class TelegramBot implements BotTransport {
   }
 
   sendPrivateMessage(chatId: string, content: string) { return this.sendMessage(chatId, content) }
+
+  /** HTML can't be split safely mid-tag, so callers keep each message under the limit. */
+  async sendHtml(chatId: string, html: string) {
+    if (!this.env.chatIds.has(chatId)) throw new Error('投递目标不在 TELEGRAM_CHAT_IDS 白名单内。')
+    if (html.length > 4096) throw new Error('HTML 消息超过 Telegram 的 4096 字符上限。')
+    const result = await this.sendChunk(chatId, html, { parse_mode: 'HTML', link_preview_options: { is_disabled: true } })
+    return [String(result.message_id)]
+  }
+
+  /**
+   * The command menu is scoped to the owner chat only, so other chats never
+   * see the management command list.
+   */
+  async setOwnerCommands(commands: Array<{ command: string; description: string }>) {
+    const scope = { type: 'chat', chat_id: Number(this.env.ownerChatId) }
+    if (!commands.length) await this.api('deleteMyCommands', { scope })
+    else await this.api('setMyCommands', { scope, commands: commands.slice(0, 100) })
+  }
 
   async sendInlinePrompt(chatId: string, content: string, buttons: InlineButton[]) {
     if (!this.env.chatIds.has(chatId)) throw new Error('投递目标不在 TELEGRAM_CHAT_IDS 白名单内。')
@@ -244,7 +262,7 @@ export class TelegramBot implements BotTransport {
       content, messageId: String(message.message_id), imageSources,
       voiceCount: message.voice || message.audio ? 1 : 0, mentionedBot,
       quote: message.reply_to_message?.from ? { user: { id: String(message.reply_to_message.from.id) } } : undefined,
-      send: text => this.sendMessage(chatId, text), prompt: timeout => this.prompt(chatId, userId, timeout),
+      send: text => this.sendMessage(chatId, text), sendHtml: html => this.sendHtml(chatId, html), prompt: timeout => this.prompt(chatId, userId, timeout),
     }
     await handle(session)
   }

@@ -1,10 +1,11 @@
 import { mkdir, readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { resolveConfig } from './config'
+import { modelApiKey } from './narrator'
 import { InterludeService } from './service'
 import { Runtime } from './runtime'
 import { Storage } from './database'
-import { registerCommands } from './commands'
+import { commandMenu, registerCommands } from './commands'
 import { assertMacOS, readTelegramEnvironment, TelegramBot, telegramPrivateEvent } from './adapters/telegram-private'
 import { routeInbound } from './router/router'
 import { runMigrations } from './memory/migrate'
@@ -14,7 +15,7 @@ export async function loadConfig(path = resolve('config.json')) {
   try { input = JSON.parse(await readFile(path, 'utf8')) } catch {
     throw new Error('无法读取 config.json；请复制 config.example.json 并填写角色设定。')
   }
-  const config = resolveConfig(input)
+  const config = resolveConfig(input, process.env)
   if (!config.storyDefaults.characterProfile.trim()) throw new Error('请填写 storyDefaults.characterProfile。')
   return config
 }
@@ -22,7 +23,7 @@ export async function loadConfig(path = resolve('config.json')) {
 export async function start() {
   assertMacOS()
   const env = readTelegramEnvironment()
-  if (!process.env.ANTHROPIC_API_KEY?.trim()) throw new Error('请填写环境变量 ANTHROPIC_API_KEY。')
+  if (!modelApiKey()) throw new Error('请填写环境变量 LLM_API_KEY。')
   const config = await loadConfig()
   await mkdir(resolve('data'), { recursive: true })
   const storage = new Storage(resolve('data/interlude.sqlite'))
@@ -51,9 +52,12 @@ export async function start() {
     }
     if (runtime.stopped) return
     console.info('正在连接 Telegram；按 Ctrl+C 停止。')
+    await bot.setOwnerCommands(config.runtime.ignoreCommandMessages ? commandMenu(runtime) : []).catch(() => console.warn('Telegram 命令菜单设置失败，命令仍可手动输入。'))
     await bot.run(async session => {
       if (!service.canHandleSession(session) && !service.canHandleGroupSession(session)) return
+      // Short menu names (/status) only count as commands for the owner; elsewhere they stay ordinary messages as before.
       const isCommand = /^[!/.]?interlude(?:[.\s]|$)/i.test(session.content.trim())
+        || service.canManageSession(session) && runtime.hasCommand(session.content)
       if (isCommand && config.blindMode?.enabled) return
       if (isCommand && config.runtime.ignoreCommandMessages) {
         // Management commands are owner-only; other chats get no reply so the command set is not revealed.

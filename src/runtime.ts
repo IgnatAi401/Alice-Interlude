@@ -18,6 +18,8 @@ export interface MessageSession {
   mentionedBot?: boolean
   quote?: { user: { id: string } }
   send(content: string): Promise<unknown>
+  /** Telegram HTML parse mode; each call must fit one 4096-char message. */
+  sendHtml?(html: string): Promise<unknown>
   prompt(timeout: number): Promise<string | undefined>
 }
 
@@ -43,7 +45,26 @@ export class Logger {
 }
 
 type CommandAction = (event: { session: MessageSession }, ...args: any[]) => Promise<unknown>
-interface RegisteredCommand { name: string; spec: string; action?: CommandAction }
+interface RegisteredCommand { name: string; spec: string; description: string; menuName?: string; action?: CommandAction }
+/** A command result sent in Telegram HTML; each item is one message. */
+export interface HtmlReply { html: string | string[] }
+
+/**
+ * Telegram menu names only allow [a-z0-9_]{1,32}, so interlude.memory.facts
+ * becomes memory_facts. The dotted form stays valid for typing.
+ */
+export function menuCommandName(name: string) {
+  const short = name.replace(/^interlude\.?/, '').replace(/\./g, '_')
+  return /^[a-z0-9_]{1,32}$/.test(short) ? short : undefined
+}
+
+function isHtmlReply(value: unknown): value is HtmlReply {
+  return !!value && typeof value === 'object' && 'html' in value
+}
+
+function htmlToPlain(html: string) {
+  return html.replace(/<[^>]+>/g, '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&amp;/g, '&')
+}
 
 /** Lifecycle utilities for the standalone bot. */
 export class Runtime {
@@ -51,6 +72,7 @@ export class Runtime {
   puppeteer?: { page(): Promise<any>; close(): Promise<void> }
   private timers = new Set<NodeJS.Timeout>()
   private commands = new Map<string, RegisteredCommand>()
+  private menuCommands = new Map<string, RegisteredCommand>()
   private requests = new Set<AbortController>()
   stopped = false
   constructor(public database: Storage, private debugEnabled = false) {}
@@ -83,19 +105,35 @@ export class Runtime {
     },
   }
 
-  command(spec: string, _description: string) {
+  command(spec: string, description: string) {
     const name = spec.split(' ')[0]
-    const command: RegisteredCommand = { name, spec }
+    const command: RegisteredCommand = { name, spec, description, menuName: menuCommandName(name) }
     this.commands.set(name, command)
+    if (command.menuName) this.menuCommands.set(command.menuName, command)
     return { action: (action: CommandAction) => { command.action = action } }
   }
 
+  /** Commands that have an action, in registration order. */
+  commandList() {
+    return Array.from(this.commands.values()).filter(command => command.action)
+      .map(({ name, spec, description, menuName }) => ({ name, spec, description, menuName }))
+  }
+
+  /** Dotted names may omit the slash (legacy); menu names need it, so plain words stay chat messages. */
+  private matchCommand(text: string) {
+    const content = text.trim()
+    const match = /^(\/)?([^\s@]+)(?:@[^\s]+)?(?:\s+([\s\S]*))?$/.exec(content)
+    if (!match) return undefined
+    const command = this.commands.get(match[2]) ?? (match[1] ? this.menuCommands.get(match[2].toLowerCase()) : undefined)
+    return command?.action ? { command, remaining: match[3]?.trim() ?? '' } : undefined
+  }
+
+  hasCommand(text: string) { return !!this.matchCommand(text) }
+
   dispatchCommand(session: MessageSession) {
-    const content = session.content.trim().replace(/^\//, '')
-    const match = /^([^\s@]+)(?:@[^\s]+)?(?:\s+([\s\S]*))?$/.exec(content)
-    const command = match && this.commands.get(match[1])
-    if (!command) return undefined
-    const remaining = match?.[2]?.trim() ?? ''
+    const matched = this.matchCommand(session.content)
+    if (!matched) return undefined
+    const { command, remaining } = matched
     const specs = Array.from(command.spec.matchAll(/[<\[]([^>\]]+)[>\]]/g))
     let cursor = 0
     const args = specs.map(item => {
@@ -107,7 +145,14 @@ export class Runtime {
     })
     return (async () => {
       const result = await command.action?.({ session }, ...args)
-      if (typeof result === 'string' && result.trim() && !this.stopped) await session.send(result)
+      if (this.stopped) return
+      if (typeof result === 'string' && result.trim()) await session.send(result)
+      else if (isHtmlReply(result)) {
+        for (const html of [result.html].flat()) {
+          if (session.sendHtml) await session.sendHtml(html)
+          else await session.send(htmlToPlain(html))
+        }
+      }
     })()
   }
 

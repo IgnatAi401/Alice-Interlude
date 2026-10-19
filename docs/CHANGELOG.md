@@ -2,6 +2,8 @@
 
 ## 未发布
 
+- 管理命令接入 Telegram 命令菜单：启动时自动注册（只在主人私聊显示），使用短名如 `/status`、`/memory_facts`，旧写法 `/interlude.xxx` 仍有效。新增 `/start` 检测是否在线、`/help [命令名]` 用富文本列出每条命令的用法与例子。
+- 模型服务可更换：新增环境变量 `LLM_BASE_URL`、`LLM_API_KEY`、`LLM_MODEL`、`LLM_COMPACTION_MODEL`、`LLM_ALTER_MODEL`、`LLM_MAX_TOKENS`、`LLM_TIMEOUT_SECONDS`、`LLM_VISION`，可接入 DeepSeek 等兼容 Anthropic Messages 协议的服务，并覆盖 `config.json` 的模型设置；模型名不再限于 `claude-*`。`ANTHROPIC_API_KEY` 仍可用。
 - 运行环境改为 Node.js 24.x（不再支持 22.x）。
 - 移除 `test/` 自动化测试与 `pnpm test`；开发检查改为 `pnpm typecheck`、`pnpm build` 和实际运行验证。
 - 文档整理到 `docs/guide/`（使用说明）和 `docs/design/`（设计说明）。
@@ -19,6 +21,7 @@
 - 新增调试开关 `logging.dumpRequests`（需 `verbosity=diagnostic`），导出完整模型请求用于隐私检查。
 - 新增主人私聊工具（默认关闭，`tools.enabled`）：`recall` 检索更早的记忆，`read_skill` 读取 `~/AliceWorkspace/skills` 中的说明书，`exec` 请求在 Mac 上执行命令。每条命令都会单独发来带【执行】【拒绝】按钮的消息，10 分钟内有效；执行结果会交回 Alice 回复。其他聊天没有任何工具。
 - 新增 `/interlude.exec [编号]` 查看命令审批记录和输出。
+- 工具提示词加强：主人要求看网页、查电脑上的东西时必须真的发起工具调用，不能凭人设推托或凭名字猜内容。
 
 - 打字节奏更像真人：每段延迟随机浮动（`runtime.typingJitterRatio`，默认 0.3）；私聊首条气泡按字数补足打字时间再发，等待中来了新消息会合并重写。
 - 提示词说明 `[管理员注记]` 是主人写入的权威设定，Alice 会照此行事但不会提起注记本身；最近 3 条注记在上下文截断时保持完整。

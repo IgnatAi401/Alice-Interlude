@@ -15,18 +15,22 @@ cp .env.example .env
 cp config.example.json config.json
 ```
 
-编辑 `.env`，填写四个环境变量：
+编辑 `.env`，填写 Telegram 和模型相关的环境变量：
 
 ```dotenv
 TELEGRAM_BOT_TOKEN=你的BotFather令牌
 TELEGRAM_CHAT_IDS=你的私聊chat_id
 ALICE_OWNER_CHAT_ID=你的私聊chat_id
-ANTHROPIC_API_KEY=你的Anthropic密钥
+LLM_BASE_URL=https://api.deepseek.com/anthropic   # 留空为 Anthropic 官方
+LLM_API_KEY=你的模型服务密钥
+LLM_MODEL=deepseek-flash
 ```
+
+模型服务只要兼容 Anthropic Messages 协议即可（Anthropic 官方、DeepSeek 等），其余 `LLM_*` 变量见 `.env.example` 和[配置指南](docs/guide/CONFIGURATION.md)。
 
 多个 chat id 用逗号分隔；私聊通常为正整数，群聊为负整数。空白名单会阻止启动。`ALICE_OWNER_CHAT_ID` 是主人自己的私聊 chat id，必须同时出现在 `TELEGRAM_CHAT_IDS` 中，否则无法启动。`.env` 只是 Node 启动时加载环境变量的便利方式，也可以由终端直接提供这些变量。
 
-在 `config.json` 中填写 `storyDefaults.characterProfile`，按需修改模型名、时区和用户资料。示例开启了 `runtime.autoCreate`，第一次获授权私聊会创建故事；示例关闭主动联系，角色仍可回复当前消息并进行后台生活推进。
+在 `config.json` 中填写 `storyDefaults.characterProfile`，按需修改时区和用户资料。示例开启了 `runtime.autoCreate`，第一次获授权私聊会创建故事；示例关闭主动联系，角色仍可回复当前消息并进行后台生活推进。
 
 ```sh
 pnpm build
@@ -39,13 +43,13 @@ pnpm start
 
 ## 配置和管理
 
-凭据和访问白名单仅从环境变量读取。`config.json` 保存角色、模型和调度设置，以及获授权聊天的可选人物资料。配置改动需要重启程序。
+凭据和访问白名单仅从环境变量读取。模型设置也可以放在环境变量中（`LLM_*`）。`config.json` 保存角色、调度设置，以及获授权聊天的可选人物资料。配置改动需要重启程序。
 
 群聊除了在 `TELEGRAM_CHAT_IDS` 中获授权，还需要在 `telegram.groupChats` 中启用；默认只在被提及时触发。群成员无须逐个加入私聊白名单，管理命令只在主人私聊（`ALICE_OWNER_CHAT_ID`）中执行。
 
 数据保存在 `data/interlude.sqlite`，包含剧本、参与者、记忆、长期事实、计划、人物变化和 Telegram 接收位置。该实现使用独立数据库格式，不自动导入旧实例数据库。
 
-常用命令：`/interlude.doctor`、`/interlude.status`、`/interlude.timeline`、`/interlude.memory`、`/interlude.pause`、`/interlude.resume`。完整说明见 [命令说明](docs/guide/COMMANDS.md)。
+常用命令：`/doctor`、`/status`、`/timeline`、`/memory`、`/pause`、`/resume`。完整说明见 [命令说明](docs/guide/COMMANDS.md)。
 
 Telegram 照片和受支持的图片文件会通过 Telegram 下载后作为 Anthropic 原生 base64 图片块发送；单图限制 4 MiB，一轮最多三张。语音会记录收到附件的事实，当前没有转写功能。可选网页观察使用 macOS 本机 Google Chrome，默认关闭。
 
