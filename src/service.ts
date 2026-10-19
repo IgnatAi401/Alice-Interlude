@@ -407,7 +407,7 @@ export class InterludeService {
     return story
   }
 
-  /** Read-only preflight for starting a story from config.json defaults. */
+  /** Read-only preflight for starting a story from config.yaml defaults. */
   async storyStartReadiness(session: Session): Promise<StoryStartReadiness> {
     const setting = this.initialStorySetting()
     const blockers: string[] = []
@@ -418,7 +418,7 @@ export class InterludeService {
     try { new Intl.DateTimeFormat('en-US', { timeZone: setting.timezone }) } catch { blockers.push(`时区无效：${setting.timezone}`) }
     if (!hasAnthropicCredentials(this.config.model)) blockers.push('请配置环境变量 LLM_API_KEY 和 LLM_MODEL。')
     if (!setting.perspective.trim()) warnings.push('Perspective 尚未填写；主角将仅使用 Canon 与已有 Overlay。')
-    if (!setting.world.trim()) warnings.push('world 尚未填写；建议在 config.json 补充现实边界与地点背景。')
+    if (!setting.world.trim()) warnings.push('world 尚未填写；建议在 config.yaml 补充现实边界与地点背景。')
     const existing = await this.findStory(session)
     return {
       ready: blockers.length === 0,

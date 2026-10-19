@@ -68,7 +68,7 @@ export function publicNarrativeRequest(draft: NarrativeRequest, options: PublicC
   }
 }
 
-/** Canon comes from config.json; user/relationship defaults describe the owner and are dropped. */
+/** Canon comes from config.yaml; user/relationship defaults describe the owner and are dropped. */
 function publicCanon(story: InterludeStory): InterludeStory['setting'] {
   const { character, world, perspective, supportingCast, location, style, timezone } = story.setting
   return { character, world, perspective, supportingCast, location, style, timezone, user: { displayName: '', profile: '' }, relationship: '' }

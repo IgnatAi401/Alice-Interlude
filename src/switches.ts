@@ -2,7 +2,7 @@ import type { Storage } from './database'
 
 /**
  * Feature switches the owner flips with /tools and /web. Kept in runtime_meta
- * rather than config.json so they survive restarts without editing files.
+ * rather than config.yaml so they survive restarts without editing files.
  */
 export type SwitchName = 'tools' | 'web'
 

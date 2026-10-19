@@ -6,7 +6,7 @@
 
 - [BEGINNER.md](guide/BEGINNER.md)：新手最少步骤。
 - [DEPLOYMENT.md](guide/DEPLOYMENT.md)：部署、获取 chat id、启动与停止。
-- [CONFIGURATION.md](guide/CONFIGURATION.md)：`config.json` 各项说明。
+- [CONFIGURATION.md](guide/CONFIGURATION.md)：`config.yaml` 各项说明。
 - [COMMANDS.md](guide/COMMANDS.md)：私聊管理命令。
 
 ## design/：设计说明

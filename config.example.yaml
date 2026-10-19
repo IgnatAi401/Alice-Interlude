@@ -1,0 +1,260 @@
+# 复制为 config.yaml 后填写，改动后重启生效。
+# 带 # 的设置行是可选项，值即默认值：去掉 # 再修改才生效（注意保持缩进）。
+# 整段被注释的配置块，要连同第一行的块名一起取消注释。
+
+# ---- 角色与故事（characterName、characterProfile 必填）----
+storyDefaults:
+  characterName: Alice
+  characterProfile: |
+    请在这里填写角色背景、性格、日常生活和说话方式。
+    可以直接换行写多段。
+  world: 当代现实生活。
+  location: 新加坡
+  timezone: Asia/Singapore          # IANA 时区名，决定故事时间、休息窗口和每日额度
+  userProfile: ""                   # 主人的资料（只在主人私聊可见）
+  relationship: ""                  # Alice 与主人的关系（只在主人私聊可见）
+  # perspective: ""                 # 个人价值观
+  # supportingCast: ""              # 配角
+  # style: 现实主义日常叙事，情绪克制，关系变化缓慢而具体。
+
+# ---- 运行与调度 ----
+runtime:
+  autoCreate: true                  # 第一次获授权私聊时自动创建故事
+  allowProactiveMessages: false     # 是否允许主动可见联系
+  # proactiveWillingnessThreshold: 0.65
+  # captureDirectMessages: true
+  # ignoreCommandMessages: true
+  # sweepIntervalMinutes: 5         # 后台扫描间隔
+  # minimumAdvanceMinutes: 30
+  # maxStoriesPerSweep: 20
+  # contextEntryLimit: 30
+  # memoryLimit: 20
+  # maxScriptCharacters: 8000
+  # maxMessageCharacters: 2000
+  # minimumDelayedReplySeconds: 10
+  # maximumDelayedReplyMinutes: 1440
+  # cancelDelayedRepliesOnUserMessage: true
+  # narrativeRetryDelaySeconds: 60  # 模型请求失败后的重试间隔
+  # narrativeRetryMaxAttempts: 6    # 0 为不重试
+  # splitReplyMessages: true        # 把回复拆成多条消息
+  # messageSeparator: "<sep/>"
+  # typingBaseDelaySeconds: 1
+  # typingCharactersPerSecond: 8
+  # typingMaxDelaySeconds: 12
+  # typingJitterRatio: 0.3          # 打字时间随机浮动 ±30%，0 为固定
+  # userMessageDebounceSeconds: 2   # 等待连续消息的秒数
+  # autoAdvanceEnabled: true        # 后台生活推进
+  # autoAdvanceIntervalMinutes: 40
+  # autoAdvanceJitterMinutes: 5
+  # conversationFollowUpMinutes: [10, 20]   # 对话结束后的短期生活补写
+  # conversationFollowUpJitterMinutes: 1
+  # restWindows:
+  #   - enabled: true
+  #     label: night sleep
+  #     start: "23:00"
+  #     end: "07:00"
+  #     minIntervalMinutes: 120
+  #     maxIntervalMinutes: 240
+  # urge:                           # 推进间隔随对话密度和生活节奏伸缩
+  #   enabled: false
+  #   activeMultiplier: 1.4
+  #   restMultiplier: 0.6
+  #   halfLifeMinutes: 90
+
+# ---- Telegram 资料（只补充资料，访问权限只由 .env 的白名单决定）----
+telegram:
+  userAccounts: []
+  # userAccounts:
+  #   - chatId: "123456789"         # 加引号，必须是字符串
+  #     label: 小林
+  #     enabled: true
+  #     personId: ""
+  #     profile: Alice 的朋友
+  #     relationship: 长期熟悉的朋友
+  groupChats: []
+  # groupChats:
+  #   - groupId: "-1001234567890"   # 加引号，必须是字符串
+  #     label: 朋友群
+  #     enabled: true
+  #     purpose: ""
+  #     characterRole: ""
+  #     responseMode: mention-only  # mention-only 或 always
+  #     contextLimit: 20
+  #     debounceSeconds: 1
+  #     cooldownSeconds: 60
+  #     willingness:
+  #       enabled: false
+  #       maxScore: 1
+  #       threshold: 0.24
+  #       probabilityAmplifier: 1.3
+  #       decayHalfLifeSeconds: 180
+  #       replyCost: 0.55
+  #       baseGain: 0.12
+  #       quoteGain: 0.12
+  #       keywordGain: 0.18
+  #       keywords: []
+
+# ---- 模型（常用项建议写在 .env 的 LLM_*，环境变量优先；服务地址只能用 LLM_BASE_URL）----
+# model:
+#   model: claude-sonnet-4-6
+#   mainTemperature: 0.8            # 0 到 1
+#   mainMaxTokens: 4096
+#   mainTimeout: 60000              # 毫秒
+#   vision:
+#     enabled: false
+#   mainPrompt: Continue the character-centered life script with grounded actions, motives, relationships, and ordinary time passing.
+#   formatPrompt: ""
+#   fixedPrompt: ""
+#   stylePrompt: Use restrained, realistic prose with concrete daily details, natural pauses, and no forced drama.
+#   compaction:
+#     enabled: true
+#     model: ""                     # 留空复用主模型
+#     temperature: 0.3
+#     maxTokens: 2048
+#     timeout: 60000
+#     mainPrompt: Compress completed scenes into concise continuity notes while preserving causality, promises, unresolved matters, and gradual character change.
+#     fixedPrompt: ""
+#     stylePrompt: Concise, factual, chronological, and concrete.
+
+# ---- 记忆 ----
+# memory:
+#   enabled: true
+#   backgroundIntervalMinutes: 10
+#   maxStoriesPerCompactionRun: 20
+#   sceneEntryThreshold: 16
+#   sceneCharacterThreshold: 10000
+#   compactionEntryLimit: 80
+#   compactionCharacterLimit: 32000
+#   sceneHookCharacters: 2000
+#   sceneSummaryCharacters: 8000
+#   arcSummaryCharacters: 12000
+#   recentEntryLimit: 30
+#   factLimit: 20
+#   factContentCharacters: 4000
+#   factImportanceWeight: 0.5
+#   factConfidenceWeight: 0.35
+#   factRecencyWeight: 0.15
+#   unresolvedWeight: 0.2
+#   statePatchConfidenceThreshold: 0.82
+#   majorStatePatchConfidenceThreshold: 0.95
+#   statePatchMinEvidence: 3
+#   statePatchMinTurns: 3
+#   statePatchMinDays: 2
+#   statePatchCooldownHours: 72
+#   autoApplyStatePatches: true
+#   allowMajorStateChanges: true
+#   maxFactsPerStory: 200
+#   activeConsequencesEnabled: true
+#   activeConsequencePromptLimit: 6
+#   activeConsequenceMaxDays: 7
+#   activeConsequenceDefaultStrength: 0.55
+#   overlayCompressionEnabled: true
+#   overlayRecentDays: 2
+#   overlayMonthlyAfterDays: 10
+#   overlayWeeklyWindowDays: 5
+#   overlayMonthlyWindowDays: 10
+#   overlayWeeklySummaryCharacters: 1600
+#   overlayMonthlySummaryCharacters: 2400
+#   publicOwnerProfile: ""          # 非主人聊天里可以知道的主人信息
+#   publicDigestEnabled: false      # 为非主人聊天另外生成公开版摘要
+#   publicDigestEntryThreshold: 20
+#   consolidateEnabled: false       # 每晚整理记忆
+#   consolidateAt: "04:00"
+#   visitorTtlDays: 30              # 访客记录保留天数，0 为永不过期
+
+# ---- 多人共享故事 ----
+# sharedStory:
+#   autoEnrollParticipants: true
+#   allowCrossConversationMessages: true
+#   shareParticipantDetails: false
+#   maxCrossConversationActions: 1
+#   participantContextLimit: 6
+
+# ---- 现实行动容量与主动联系（Agency Window）----
+# agency:
+#   enabled: true
+#   maxWindowMinutes: 240
+#   minimumProactiveIntervalMinutes: 30
+#   maxCandidateHours: 48
+
+# ---- 氛围惯性（Alter System）----
+# alterSystem:
+#   enabled: true
+#   baseThreshold: 10
+#   densityFactor: 0.3
+#   sameDirectionBoost: 0.05
+#   oppositeDecay: 0.15
+#   minWeight: 0.2
+#   maxIntensity: 2
+#   model: ""                       # 留空复用主模型
+#   temperature: 0.3
+#   maxTokens: 400
+#   timeout: 30000
+#   prompt: ""
+
+# ---- 本机 Chrome 只读浏览 ----
+# browser:
+#   enabled: false
+#   mode: deferred-only             # deferred-only 或 allow-immediate
+#   allowSearch: true
+#   allowVisit: true
+#   searchUrlTemplate: "https://www.google.com/search?q={query}"
+#   allowedDomains: []
+#   blockedDomains: []
+#   maxConcurrentPages: 1
+#   maxResearchPerSweep: 1
+#   navigationTimeout: 20000
+#   waitUntil: domcontentloaded     # domcontentloaded 或 networkidle2
+#   maxTextCharacters: 20000
+#   maxExcerptCharacters: 4000
+#   maxObservationsInPrompt: 3
+#   cacheMinutes: 60
+#   allowGroupTriggeredResearch: false
+#   logObservationPreview: false
+
+# ---- 工具（开关用主人私聊 /tools on|off）----
+# tools:
+#   maxSteps: 6
+#   recall:
+#     maxResults: 8
+#   skills:
+#     dir: "~/AliceWorkspace/skills"
+#     maxChars: 20000
+#   exec:
+#     workdir: "~/AliceWorkspace"
+#     timeoutSeconds: 60
+#     maxOutputChars: 8000
+#     approvalTtlMinutes: 10
+#     maxPending: 3
+
+# ---- 网站接口（开关用主人私聊 /web on|off）----
+# web:
+#   port: 8787                      # 只监听 127.0.0.1
+#   basePath: /alice
+#   serveRootPage: true
+#   siteUrl: https://alice.ignat.ai
+#   perVisitorPerMinute: 6
+#   perVisitorPerHour: 60
+#   perIpPerMinute: 6
+#   perIpPerHour: 60
+#   maxStreamsPerVisitor: 3
+#   guestIdleMinutes: 60
+#   renamesPerMonth: 3              # 0 为禁止改名
+
+# ---- 日志 ----
+# logging:
+#   level: info                     # silent / error / warn / info / debug
+#   verbosity: standard             # summary / standard / diagnostic
+#   format: layered                 # compact / detailed / layered
+#   colors: true
+#   colorTheme: dark                # dark / light
+#   kaomoji: true
+#   logScriptPreview: false
+#   logMessageContent: false
+#   dumpRequests: false             # 仅 diagnostic 时生效，文件含私密内容
+#   previewLength: 500
+
+# ---- 沉浸模式：关闭管理命令和业务日志，只留健康心跳 ----
+# blindMode:
+#   enabled: false
+#   healthReportMinutes: 10

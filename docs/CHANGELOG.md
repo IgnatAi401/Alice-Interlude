@@ -2,6 +2,8 @@
 
 ## 未发布
 
+- 部署调整：`api.ignat.ai` 上给人看的页面（`/`、`/alice/` 和其余路径的 404）改由独立的文档站（`API-Page` 项目，Cloudflare Worker 路由）提供；Tunnel 的 ingress 只转发 `/alice/api/*`，并需在 Cloudflare 为 `api.ignat.ai/alice/api/*` 建一条不运行 Worker 的路由。程序行为不变，Alice 内置说明页只在本机可见。步骤见 `docs/guide/DEPLOYMENT.md` 第 5 节。
+- 配置文件改为 YAML：程序读取 `config.yaml`（不再读取 `config.json`，旧部署需按新模板改写），模板为 `config.example.yaml`。模板与 `.env.example` 列出全部可配置项，可选项以 `#` 注释给出默认值。
 - 网站接口去掉旧数据兼容：所有 `v_` 码都有姓名，`/api/history` 一定返回 `name`，每次成功改名都计次；`/api/history` 的密码只认 `X-Visitor-Key` 请求头（只有 `/api/events` 接受查询参数）；身份发出第一条消息即标记为已聊天，清理时不再回查聊天记录。配置里残留 `tools.enabled`、`web.enabled`、`sharedStory.managerAccounts` 时改为通用的“不支持的配置项”报错。
 - 网站姓名政治筛查：政治昵称只拦明确内容：政治人物全名、党政军机构或官方身份、明确政治事件、分裂主张、政治组织和口号；简繁体与明确外文全名同样检查。包子、维尼、64 等隐喻、暗语、谐音、拆字和缩写不做政治推断；普通姓名、地名和一般词不因联想拒绝。政治拒绝沿用 422 `name_rejected`，原因统一为“姓名包含明确政治内容，请换个称呼”。
 - 网站访客姓名：`POST /api/visitor` 申请 `v_` 码必须带 `name`（1–24 字），姓名与码绑定，作为发送者名字交给模型；访客模式（`g_` 码）不能取名，固定叫“访客”+ 码的前 6 位，带 `name` 申请或改名分别返回 400、403（`code: "guest_no_name"`）；`POST /api/message` 的 `nickname` 不再生效。新增 `POST /api/name` 改名，每月最多 `web.renamesPerMonth`（默认 3）次。每次起名和改名先过内置词库（能确定的直接给结论、不调模型；英文与拼音缩写只按整词匹配，不误伤含相同字母的正常单词），其余由模型审查。单纯的粗口名（如“傻逼”）允许，有针对性的辱骂（“小明是傻逼”“你傻逼”、骂角色或群体）和“妈妈、主人”这类占便宜的称呼返回 422 并拒绝发码或改名；审查失败返回 503。`/api/history` 增加 `name`、`renamesLeft`。提示词中访客的来源由“网站”改称“公开 API”。

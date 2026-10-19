@@ -12,7 +12,7 @@
 cd /Users/ignat/Developer/Alice-Interlude
 pnpm install --frozen-lockfile
 cp .env.example .env
-cp config.example.json config.json
+cp config.example.yaml config.yaml
 ```
 
 编辑 `.env`，填写 Telegram 和模型相关的环境变量：
@@ -30,7 +30,7 @@ LLM_MODEL=deepseek-flash
 
 多个 chat id 用逗号分隔；私聊通常为正整数，群聊为负整数。空白名单会阻止启动。`ALICE_OWNER_CHAT_ID` 是主人自己的私聊 chat id，必须同时出现在 `TELEGRAM_CHAT_IDS` 中，否则无法启动。`.env` 只是 Node 启动时加载环境变量的便利方式，也可以由终端直接提供这些变量。
 
-在 `config.json` 中填写 `storyDefaults.characterProfile`，按需修改时区和用户资料。示例开启了 `runtime.autoCreate`，第一次获授权私聊会创建故事；示例关闭主动联系，角色仍可回复当前消息并进行后台生活推进。
+在 `config.yaml` 中填写 `storyDefaults.characterProfile`，按需修改时区和用户资料。示例开启了 `runtime.autoCreate`，第一次获授权私聊会创建故事；示例关闭主动联系，角色仍可回复当前消息并进行后台生活推进。
 
 ```sh
 pnpm build
@@ -43,7 +43,7 @@ pnpm start
 
 ## 配置和管理
 
-凭据和访问白名单仅从环境变量读取。模型设置也可以放在环境变量中（`LLM_*`）。`config.json` 保存角色、调度设置，以及获授权聊天的可选人物资料。配置改动需要重启程序。
+凭据和访问白名单仅从环境变量读取。模型设置也可以放在环境变量中（`LLM_*`）。`config.yaml` 保存角色、调度设置，以及获授权聊天的可选人物资料。配置改动需要重启程序。
 
 群聊除了在 `TELEGRAM_CHAT_IDS` 中获授权，还需要在 `telegram.groupChats` 中启用；默认只在被提及时触发。群成员无须逐个加入私聊白名单，管理命令只在主人私聊（`ALICE_OWNER_CHAT_ID`）中执行。
 

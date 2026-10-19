@@ -1,6 +1,6 @@
 # 数据与凭据边界
 
-`TELEGRAM_BOT_TOKEN`、`TELEGRAM_CHAT_IDS`、`ALICE_OWNER_CHAT_ID` 和 `LLM_API_KEY`（兼容旧名 `ANTHROPIC_API_KEY`）只从环境读取。`LLM_BASE_URL` 必须是 https（仅本机代理可用 http），避免 key 明文出网；更换模型服务意味着全部私密上下文会发给该服务商。exec 子进程同样拿不到 `LLM_API_KEY`。真实 `.env`、`config.json`、SQLite 数据和依赖目录均不进入版本控制。
+`TELEGRAM_BOT_TOKEN`、`TELEGRAM_CHAT_IDS`、`ALICE_OWNER_CHAT_ID` 和 `LLM_API_KEY`（兼容旧名 `ANTHROPIC_API_KEY`）只从环境读取。`LLM_BASE_URL` 必须是 https（仅本机代理可用 http），避免 key 明文出网；更换模型服务意味着全部私密上下文会发给该服务商。exec 子进程同样拿不到 `LLM_API_KEY`。真实 `.env`、`config.yaml`、SQLite 数据和依赖目录均不进入版本控制。
 
 Telegram 接收先检查实际 chat id，再下载图片、创建故事或调用模型。私聊和群聊的访问范围均由环境白名单限定，输出同样检查目标白名单。群配置或用户资料不能扩大访问范围。发送失败后的补发（`delivery-retry`）只重发原文给原参与者，每次补发都重新走同一投递入口和白名单检查，不会改换目标。
 
@@ -35,7 +35,7 @@ Anthropic 接收当前叙事需要的角色设定、连续性记录和消息；�
 - 身份（2026-10-19 起不做人机验证和 cookie）：第一次发消息时服务器分配身份，调用方不能自定。正式身份是 `v_` + 8 位身份码与 8 位密码（31 个无歧义字符，约 2^39.6 种，不分大小写，便于手输找回），`interlude_web_visitor` 只存密码的 SHA-256，定长比较，身份码不存在与密码错误返回同样的 401。短码靠输错限制兜底：同一 IP 每小时 20 次、同一个码每小时 10 次，超过后连正确密码也返回 429，因此换多少 IP 都无法穷举。访客模式（`guest: true`）只发 `g_` + 22 位 base64url 随机码（128 位，区分大小写），它本身就是凭据，闲置 `guestIdleMinutes`（默认 60）后删除身份行；留下的记录仍为 `visitor:web:g_…`，不再有人能用码访问，只有主人可见，按 `visitorTtlDays` 删除。身份码只用于隔离访客之间的记忆和聊天记录；泄露只会让别人读写那位访客的对话，任何访客都没有超出 public 的权限。SSE 因浏览器限制把密码放在查询参数，可能出现在 Cloudflare 日志中。
 - 跨源：接口不使用 cookie 等浏览器自动携带的凭据，因此 `Access-Control-Allow-Origin: *`，不存在 CSRF；同域名其他服务也拿不到访客的密码。（取代原 S14 的来源限制）
 - 防滥用：请求体 8 KB、消息 2000 字上限；令牌桶限流（`src/router/limits.ts`，每访客每分钟/每小时、每 IP 每分钟/每小时，新建访客也计入 IP 限额）；同一 `clientId` 重试不会触发第二个回合。所有非主人回合另有每日轮数上限（`src/router/quota.ts`，Router 放行前检查，用完后不调用模型，主人不受限），即使换很多 IP 也无法让每天的模型调用超过上限。
-- 说明页（`/` 与 `<basePath>/`）是静态 HTML，只用配置和进程启动时间，不读任何表；带 `default-src 'none'` 的 CSP，无脚本。
+- 说明页（`/` 与 `<basePath>/`）是静态 HTML，只用配置和进程启动时间，不读任何表；带 `default-src 'none'` 的 CSP，无脚本。公网上这两个路径由独立的静态文档站（Worker 路由）接管，Tunnel 只转发 `<basePath>/api/*`；文档站不调用接口、不托管用户可控内容。
 - 网页聊天记录存在 `interlude_web_message`（访客消息与 Alice 发给该访客的消息），只在身份号与密码都正确时读给访客本人，不进入模型上下文，不是记忆表。开启每晚整理时随访客记录一起按 `visitorTtlDays` 删除；闲置超过同样天数的身份号也一并删除。
 
 ## 记忆受众

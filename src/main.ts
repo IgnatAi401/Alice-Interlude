@@ -1,5 +1,6 @@
 import { mkdir, readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
+import { parse as parseYaml } from 'yaml'
 import { resolveConfig } from './config'
 import { modelApiKey } from './narrator'
 import { InterludeService } from './service'
@@ -13,10 +14,14 @@ import { QUOTA_REPLY } from './router/quota'
 import { WebServer } from './adapters/web'
 import { runMigrations } from './memory/migrate'
 
-export async function loadConfig(path = resolve('config.json')) {
+export async function loadConfig(path = resolve('config.yaml')) {
+  let text: string
+  try { text = await readFile(path, 'utf8') } catch {
+    throw new Error('无法读取 config.yaml；请复制 config.example.yaml 并填写角色设定。')
+  }
   let input: unknown
-  try { input = JSON.parse(await readFile(path, 'utf8')) } catch {
-    throw new Error('无法读取 config.json；请复制 config.example.json 并填写角色设定。')
+  try { input = parseYaml(text) } catch (error) {
+    throw new Error(`config.yaml 格式错误：${error instanceof Error ? error.message : String(error)}`)
   }
   const config = resolveConfig(input, process.env)
   if (!config.storyDefaults.characterProfile.trim()) throw new Error('请填写 storyDefaults.characterProfile。')

@@ -387,7 +387,7 @@ function mergeDefaults(defaults: any, input: any, path = 'config'): any {
 
 /**
  * Model settings may live in the environment (LLM_*) so the provider can be
- * swapped without touching config.json; set variables override the file.
+ * swapped without touching config.yaml; set variables override the file.
  */
 export function applyModelEnvironment(config: Config, env: NodeJS.ProcessEnv) {
   const text = (name: string) => env[name]?.trim() || undefined

@@ -14,10 +14,10 @@ export function registerCommands(ctx: Runtime, service: InterludeService) {
     if (!requireManager(service, session)) return '无权限：手动启动共享主剧本只允许主人私聊。'
     const readiness = await service.storyStartReadiness(session)
     if (readiness.existing) return `当前已有 ${readiness.existing.setting.character.name} 的活动主剧本；请使用 /status 查看状态。`
-    if (!readiness.ready) return formatStoryStartReadiness(readiness, 'config.json 档案尚未适合启动')
+    if (!readiness.ready) return formatStoryStartReadiness(readiness, 'config.yaml 档案尚未适合启动')
     const preview = readiness.preview
     const message = [
-      '即将从当前 config.json 档案启动故事：',
+      '即将从当前 config.yaml 档案启动故事：',
       `主角：${preview.characterName}`,
       `角色设定：${preview.characterProfile ? '已填写' : '未填写'}`,
       `Perspective：${preview.perspective ? '已填写' : '未填写'}`,
@@ -30,7 +30,7 @@ export function registerCommands(ctx: Runtime, service: InterludeService) {
     if (!await askConfirmation(session, `${message}\n确认从此档案启动吗？(y/n)`)) return '操作已取消。'
     const story = await service.createStory(session)
     const participant = await service.findParticipant(session, story)
-    return `已从 config.json 档案启动 ${story.setting.character.name} 的共享主剧本，并加入 ${participant?.displayName || session.userId}。`
+    return `已从 config.yaml 档案启动 ${story.setting.character.name} 的共享主剧本，并加入 ${participant?.displayName || session.userId}。`
   }
 
   ctx.command('interlude.start', '检测 Alice 是否在线，并显示运行概况')
@@ -57,14 +57,14 @@ export function registerCommands(ctx: Runtime, service: InterludeService) {
       return helpReply(ctx, name)
     })
 
-  ctx.command('interlude.doctor', '检查当前 config.json 档案、权限与模型是否适合启动故事')
+  ctx.command('interlude.doctor', '检查当前 config.yaml 档案、权限与模型是否适合启动故事')
     .action(async ({ session = missingSession() }) => formatStoryStartReadiness(await service.storyStartReadiness(session)))
 
-  ctx.command('interlude.story.start', '管理员：从当前 config.json 档案手动启动第一份运行中故事')
+  ctx.command('interlude.story.start', '管理员：从当前 config.yaml 档案手动启动第一份运行中故事')
     .action(async ({ session = missingSession() }) => startStoryFromConfig(session))
 
 
-  ctx.command('interlude.setup <json:text>', '高级：用 JSON 单独修改当前故事设定；普通测试请优先在 config.json 填 storyDefaults')
+  ctx.command('interlude.setup <json:text>', '高级：用 JSON 单独修改当前故事设定；普通测试请优先在 config.yaml 填 storyDefaults')
     .action(async ({ session = missingSession() }, json) => {
       if (!requireManager(service, session)) return '当前 Telegram 聊天没有管理权限：管理命令只允许 ALICE_OWNER_CHAT_ID 对应的主人私聊。'
       const story = await requireStory(service, session)
@@ -466,7 +466,7 @@ export function registerCommands(ctx: Runtime, service: InterludeService) {
       const story = await requireStory(service, session)
       if (typeof story === 'string') return story
       await service.purgeAllData(story.id)
-      return '已彻底重置：旧剧本、场景摘要、剧情弧线、长期事实、记忆、意图、状态演化和参与者关系状态均已清除；当前故事保留为空白的全局主剧本，Canon 已按当前 config.json 配置重建。'
+      return '已彻底重置：旧剧本、场景摘要、剧情弧线、长期事实、记忆、意图、状态演化和参与者关系状态均已清除；当前故事保留为空白的全局主剧本，Canon 已按当前 config.yaml 配置重建。'
     })
 
   // text 参数读取剩余全文；两个时间参数分别使用 string。
@@ -547,7 +547,7 @@ const HELP_SECTIONS: Array<{ title: string; commands: Record<string, CommandDoc>
     'interlude.setup': { detail: '参数是一个 JSON 对象，只覆盖给出的字段。', example: '/setup {"perspective":"……"}' },
     'interlude.script.note': { detail: 'Alice 会按注记行事，但不会提起注记本身。', example: '/script_note 她上周已经搬到了海边' },
     'interlude.purge.range': { detail: '时间使用 ISO-8601，带时区。', example: '/purge_range 2026-08-01T00:00:00+08:00 2026-08-02T00:00:00+08:00', confirm: true },
-    'interlude.purge.all': { detail: '保留空白主剧本，按当前 config.json 重建 Canon。', confirm: true },
+    'interlude.purge.all': { detail: '保留空白主剧本，按当前 config.yaml 重建 Canon。', confirm: true },
     'interlude.database.clear': { detail: '清空全部叙事数据，无法恢复。', confirm: true },
   } },
 ]
@@ -616,7 +616,7 @@ async function askConfirmation(session: Session, message: string) {
   return /^(?:y|yes)$/i.test(String(answer ?? '').trim())
 }
 
-function formatStoryStartReadiness(readiness: import('./service').StoryStartReadiness, title = 'config.json 档案检查') {
+function formatStoryStartReadiness(readiness: import('./service').StoryStartReadiness, title = 'config.yaml 档案检查') {
   const preview = readiness.preview
   return [
     title,
@@ -638,7 +638,7 @@ function formatStoryStartReadiness(readiness: import('./service').StoryStartRead
 
 async function requireStory(service: InterludeService, session: Session) {
   if (!service.canHandleSession(session)) return '当前 Telegram 聊天未获授权。请检查环境变量 TELEGRAM_CHAT_IDS。'
-  return await service.findStory(session) ?? '当前私聊还没有故事。请先在 config.json 完成档案，然后执行 /doctor；手动启动请使用 /story_start，或开启 runtime.autoCreate 后直接发送第一条私聊。'
+  return await service.findStory(session) ?? '当前私聊还没有故事。请先在 config.yaml 完成档案，然后执行 /doctor；手动启动请使用 /story_start，或开启 runtime.autoCreate 后直接发送第一条私聊。'
 }
 
 async function changeStatus(service: InterludeService, session: Session, status: 'active' | 'paused') {

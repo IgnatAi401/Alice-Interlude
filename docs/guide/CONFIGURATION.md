@@ -1,6 +1,6 @@
 # 配置指南
 
-环境变量由 `.env` 或启动终端提供；角色与运行设置从 `config.json` 读取。未填写的配置使用 `src/config.ts` 中的默认值，未知字段和明显类型错误会在启动时拒绝。配置更改后重启。
+环境变量由 `.env` 或启动终端提供；角色与运行设置从 `config.yaml` 读取。未填写的配置使用 `src/config.ts` 中的默认值，未知字段和明显类型错误会在启动时拒绝。`config.example.yaml` 列出了全部配置项，`#` 注释掉的行就是默认值，去掉 `#` 再修改即可（注意保持缩进）。`chatId`、`groupId` 要加引号写成字符串。配置更改后重启。
 
 ## 环境变量
 
@@ -16,23 +16,23 @@
 | `LLM_MAX_TOKENS`、`LLM_TIMEOUT_SECONDS` | 主叙事输出上限与超时（秒） |
 | `LLM_VISION` | `true`/`false`，是否把图片发给模型 |
 
-`LLM_*` 填了就优先于 `config.json` 的 `model` 设置，没填的项继续用 `config.json` 或默认值。
+`LLM_*` 填了就优先于 `config.yaml` 的 `model` 设置，没填的项继续用 `config.yaml` 或默认值。
 
-私聊 ID 为正整数，群聊 ID 为负整数。`config.json` 中的资料和群配置不授予环境白名单以外的访问权。消息接收、附件下载和发送都会检查白名单。
+私聊 ID 为正整数，群聊 ID 为负整数。`config.yaml` 中的资料和群配置不授予环境白名单以外的访问权。消息接收、附件下载和发送都会检查白名单。
 
 ## 最小配置
 
-```json
-{
-  "storyDefaults": {
-    "characterName": "Alice",
-    "characterProfile": "在这里填写完整的人设和日常生活。",
-    "world": "当代现实生活。",
-    "location": "新加坡",
-    "timezone": "Asia/Singapore"
-  },
-  "runtime": { "autoCreate": true, "allowProactiveMessages": false }
-}
+```yaml
+storyDefaults:
+  characterName: Alice
+  characterProfile: |
+    在这里填写完整的人设和日常生活。
+  world: 当代现实生活。
+  location: 新加坡
+  timezone: Asia/Singapore
+runtime:
+  autoCreate: true
+  allowProactiveMessages: false
 ```
 
 `storyDefaults` 还支持 `perspective`（个人价值观）、`userProfile`、`relationship`、`supportingCast` 和 `style`。
@@ -41,17 +41,18 @@
 
 以下配置为已在环境白名单中的聊天补充资料：
 
-```json
-{
-  "telegram": {
-    "userAccounts": [
-      { "chatId": "123456789", "label": "小林", "profile": "Alice 的朋友", "relationship": "长期熟悉的朋友" }
-    ],
-    "groupChats": [
-      { "groupId": "-1001234567890", "label": "朋友群", "enabled": true, "responseMode": "mention-only" }
-    ]
-  }
-}
+```yaml
+telegram:
+  userAccounts:
+    - chatId: "123456789"
+      label: 小林
+      profile: Alice 的朋友
+      relationship: 长期熟悉的朋友
+  groupChats:
+    - groupId: "-1001234567890"
+      label: 朋友群
+      enabled: true
+      responseMode: mention-only
 ```
 
 每个 Bot 共享一个主剧本，参与者有独立的资料与关系状态。默认不把其它私聊的详细资料传给当前私聊的模型请求；后台主动联系会使用受控的关系摘要。`shareParticipantDetails` 可显式开启跨参与者详细资料。
@@ -60,7 +61,7 @@
 
 ## 模型
 
-常用设置建议放 `.env`（见上表）。`config.json` 中对应 `model.baseUrl`、`model.model`，主叙事可调 `mainMaxTokens`、`mainTimeout`（毫秒）和 `mainTemperature`（0 到 1），以及 `mainPrompt`、`fixedPrompt`、`formatPrompt`、`stylePrompt`。
+常用设置建议放 `.env`（见上表）。`config.yaml` 中对应 `model.model`（服务地址只能用 `LLM_BASE_URL` 设置），主叙事可调 `mainMaxTokens`、`mainTimeout`（毫秒）和 `mainTemperature`（0 到 1），以及 `mainPrompt`、`fixedPrompt`、`formatPrompt`、`stylePrompt`。
 
 记忆与 Overlay 压缩使用 `model.compaction` 的 `model`、`maxTokens`、`timeout`、`temperature`。`alterSystem` 可单独设分析模型；留空复用主模型。所有任务都走 Anthropic Messages 协议，thinking 固定关闭；服务商只要兼容这一协议即可更换。DeepSeek 会忽略缓存断点（不影响结果，只是没有缓存折扣）。
 
@@ -101,27 +102,23 @@
 
 网站接口默认关闭，关闭时不开任何端口。开关同样不在配置文件里：主人私聊发送 `/web on` 立即开启，`/web off` 立即关闭并释放端口，状态重启后保持。下面的 `web` 配置段只管端口、路径和限流。开启后 Alice 在 `127.0.0.1:<web.port>` 提供一个通用 HTTP 接口，外网经 Cloudflare Tunnel 以 `https://api.ignat.ai/alice/api/...` 访问（见 [部署说明](DEPLOYMENT.md#5-网站接口与-cloudflare-tunnel)）。**通过这个接口来的所有对话都是 public 等级**：没有工具，只能看到公开记忆和该访客自己的记录。不需要额外的密钥或环境变量。
 
-```json
-{
-  "web": {
-    "enabled": true,
-    "port": 8787,
-    "basePath": "/alice",
-    "serveRootPage": true,
-    "siteUrl": "https://alice.ignat.ai",
-    "perVisitorPerMinute": 6,
-    "perVisitorPerHour": 60,
-    "perIpPerMinute": 6,
-    "perIpPerHour": 60,
-    "maxStreamsPerVisitor": 3,
-    "guestIdleMinutes": 60,
-    "renamesPerMonth": 3
-  }
-}
+```yaml
+web:
+  port: 8787
+  basePath: /alice
+  serveRootPage: true
+  siteUrl: https://alice.ignat.ai
+  perVisitorPerMinute: 6
+  perVisitorPerHour: 60
+  perIpPerMinute: 6
+  perIpPerHour: 60
+  maxStreamsPerVisitor: 3
+  guestIdleMinutes: 60
+  renamesPerMonth: 3
 ```
 
-- `basePath`：Alice 在 `api.ignat.ai` 上占用的一级路径，其他路径留给以后的服务。
-- `serveRootPage`：`api.ignat.ai/` 根路径暂时由 Alice 显示总览页；以后由别的服务接管时改为 `false`（同时改 Tunnel 配置）。
+- `basePath`：Alice 在 `api.ignat.ai` 上占用的一级路径，其他路径留给以后的服务。公网上只有 `<basePath>/api/*` 转到 Alice，`/` 与 `<basePath>/` 由独立的文档站提供（见部署说明）。
+- `serveRootPage`：本机 `127.0.0.1:<web.port>/` 是否显示总览页。公网的根路径已由文档站接管，这一项只影响本机检查，可保持默认。
 - `siteUrl`：说明页上“去聊天”的链接，留空则不显示。
 - 限流：每个访客每分钟、每小时的消息数，每个 IP 每分钟、每小时的请求数（消息与申请身份码合计，默认与单个访客相同：6 条/分钟、60 条/小时），超出返回 429。另有固定的输错限制：同一 IP 每小时最多输错 20 次、同一个码每小时最多被输错 10 次，超过后返回 429（正确的密码也要等）。
 - `guestIdleMinutes`：访客码闲置多少分钟后作废，默认 60。
