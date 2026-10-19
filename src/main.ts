@@ -49,6 +49,8 @@ export async function start() {
     // Every web request is routed like any other event; resolveTier can only return 'public' for it.
     receive,
     quotaResetSeconds: () => service.quota.secondsUntilReset(),
+    reviewName: name => service.reviewVisitorName(name),
+    timezone: config.storyDefaults.timezone,
     characterName: config.storyDefaults.characterName,
     visitorTtlDays: config.memory?.visitorTtlDays ?? 30,
   })

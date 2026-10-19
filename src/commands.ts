@@ -122,7 +122,7 @@ export function registerCommands(ctx: Runtime, service: InterludeService) {
       return on ? `已开启网站接口，监听 ${address}。访客对话都是 public 等级。` : '已关闭网站接口，端口已释放；访客的已有记录保留。'
     })
 
-  ctx.command('interlude.quota [limit:string]', '查看或修改每日非主人轮数上限（网站访客、其他私聊、群聊发言）；主人不受限')
+  ctx.command('interlude.quota [limit:string]', '查看或修改每日非主人轮数上限（API 访客、其他私聊、群聊发言）；主人不受限')
     .action(async ({ session = missingSession() }, limit) => {
       if (!requireManager(service, session)) return '当前 Telegram 聊天没有管理权限。'
       const raw = limit?.trim()

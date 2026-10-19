@@ -114,7 +114,8 @@
     "perIpPerMinute": 6,
     "perIpPerHour": 60,
     "maxStreamsPerVisitor": 3,
-    "guestIdleMinutes": 60
+    "guestIdleMinutes": 60,
+    "renamesPerMonth": 3
   }
 }
 ```
@@ -124,6 +125,7 @@
 - `siteUrl`：说明页上“去聊天”的链接，留空则不显示。
 - 限流：每个访客每分钟、每小时的消息数，每个 IP 每分钟、每小时的请求数（消息与申请身份码合计，默认与单个访客相同：6 条/分钟、60 条/小时），超出返回 429。另有固定的输错限制：同一 IP 每小时最多输错 20 次、同一个码每小时最多被输错 10 次，超过后返回 429（正确的密码也要等）。
 - `guestIdleMinutes`：访客码闲置多少分钟后作废，默认 60。
+- `renamesPerMonth`：每个身份每月（按故事时区的自然月）最多改名几次，默认 3；`0` 表示不能改名。
 - 同时开启 `memory.consolidateEnabled`，访客记录（含作废访客码留下的记录）、网页聊天记录和闲置的身份号才会按 `memory.visitorTtlDays`（默认 30 天）删除，与说明页告知一致。
 - 每日轮数上限：所有非主人回合（网站访客、其他私聊、群聊发言）每天共用一个上限，默认 200，按故事时区零点重置；主人不受限。上限不在配置文件里，用 `/quota 300` 随时修改。用完后网站返回 429，响应体带 `code: "daily_limit"`、一句角色化的 `reply` 和 `Retry-After`（秒，到次日零点）。
 
@@ -134,9 +136,13 @@
 - **正式身份**：身份码 `v_` + 8 位（如 `v_K7M2Q9XP`）和 8 位密码（如 `4HNW8T3R`），调用方自己保存，以后可手输找回对话。只用大写字母和数字、去掉了易混的 `0 O 1 I L`，输入不分大小写。
 - **访客模式**：申请时带 `"guest": true`，只发访客码 `g_` + 22 位，不要密码。闲置超过 `guestIdleMinutes`（默认 1 小时）就作废，之后用它会返回 401 `Guest code expired`；它留下的聊天和记忆不再对应任何码，仍保存在服务器上（只有主人能看到），按 `visitorTtlDays` 删除。
 
+**姓名**：申请正式身份必须带 `name`（1–24 字），它与码绑定，Alice 会把它当作对方的名字。起名和改名先过内置词库，能确定的直接给结论；其余由模型审查。单纯的粗口名（如“傻逼”“SB”）可以用，有针对性的辱骂（“小明是傻逼”“你傻逼”、骂 Alice 或某个群体）不行；“妈妈”“主人”这类占便宜的称呼、冒充 Alice 或管理员的名字会被拒绝（422，`code: "name_rejected"`，带 `reason`），此时不发码、不改名；审查服务出错返回 503（`code: "name_review_unavailable"`）。访客模式不能取名，固定叫“访客”+ 访客码的前 6 位（如 `访客AbC1x2`），带 `name` 申请返回 400、调 `/api/name` 返回 403（`code: "guest_no_name"`）。改名每月有次数上限，超过返回 429（`code: "rename_limit"`）；被拒绝的尝试不计次数，但和发消息共用限流。
+
+政治昵称只拦明确内容：政治人物全名、党政军机构或官方身份、明确政治事件、分裂主张、政治组织和口号；简繁体与明确外文全名同样检查。包子、维尼、64 等隐喻、暗语、谐音、拆字和缩写不做政治推断；普通姓名、地名和一般词不因联想拒绝。政治拒绝沿用 422 `name_rejected`，原因统一为“姓名包含明确政治内容，请换个称呼”。
+
 ```sh
 # 申请正式身份：返回 visitorId 和 visitorKey（密码只返回这一次）
-curl -X POST https://api.ignat.ai/alice/api/visitor -H 'Content-Type: application/json' -d '{}'
+curl -X POST https://api.ignat.ai/alice/api/visitor -H 'Content-Type: application/json' -d '{"name":"小明"}'
 # 或访客模式：只返回 visitorId（g_ 码），之后只带它就行
 curl -X POST https://api.ignat.ai/alice/api/visitor -H 'Content-Type: application/json' -d '{"guest":true}'
 # 发消息：带上身份码（和密码）
@@ -147,9 +153,10 @@ curl 'https://api.ignat.ai/alice/api/history?visitorId=v_…' -H 'X-Visitor-Key:
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| `POST` | `/api/visitor` | `{ guest? }` → `201 { visitorId, visitorKey? }`。`guest: true` 为访客模式（无密码）；计入按 IP 的限流。申请后超过 24 小时没有任何请求、也从没发过消息的身份会被自动清理 |
-| `POST` | `/api/message` | `{ text, visitorId, visitorKey?, nickname?, clientId? }` → `202 { id, visitorId }`。`text` 1–2000 字；`clientId` 用于网络重试去重 |
-| `GET` | `/api/history?visitorId=…` | 密码放请求头 `X-Visitor-Key`（访客码不需要） → `{ visitorId, messages: [{ id, role: 'visitor'|'alice', text, at }] }`（最近 200 条） |
+| `POST` | `/api/visitor` | `{ name, guest? }` → `201 { visitorId, visitorKey?, name, renamesLeft }`。`name` 正式身份必填、访客模式不能带；`guest: true` 为访客模式（无密码）；计入按 IP 的限流。申请后超过 24 小时没有任何请求、也从没发过消息的身份会被自动清理 |
+| `POST` | `/api/name` | `{ visitorId, visitorKey?, name }` → `200 { name, renamesLeft }`。与当前名字相同时不审查、不计次；原来没有名字的身份第一次起名不计次 |
+| `POST` | `/api/message` | `{ text, visitorId, visitorKey?, clientId? }` → `202 { id, visitorId }`。`text` 1–2000 字；`clientId` 用于网络重试去重 |
+| `GET` | `/api/history?visitorId=…` | 密码放请求头 `X-Visitor-Key`（访客码不需要） → `{ visitorId, name?, renamesLeft, messages: [{ id, role: 'visitor'|'alice', text, at }] }`（最近 200 条） |
 | `GET` | `/api/events?visitorId=…&visitorKey=…` | SSE 推送 `typing {active}` 与 `message`；浏览器 EventSource 不能带请求头，所以密码放查询参数 |
 
 没带身份码、身份码或密码不对、访客码已作废都返回 401。任何网站、脚本都能调用（`Access-Control-Allow-Origin: *`）。

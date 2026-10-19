@@ -10,7 +10,7 @@ export const AUDIENCE_CLASSIFICATION_RULES = [
   '2. The owner\'s schedule, real-time whereabouts or routines (e.g. "he is home alone tonight").',
   '3. Health, body, mental state, or anything confided while feeling low.',
   '4. Finances, income, spending details.',
-  '5. Anything about family, friends, partners or any other third party, including other chat participants and website visitors.',
+  '5. Anything about family, friends, partners or any other third party, including other chat participants and API visitors.',
   '6. Intimate content between the owner and the protagonist, private agreements, in-jokes or pet names that belong only to the two of them.',
   '7. Anything the owner asked to keep secret.',
   '8. Anything on the computer: files, commands, outputs, project internals, keys.',

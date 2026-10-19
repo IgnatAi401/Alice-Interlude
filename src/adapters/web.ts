@@ -5,6 +5,9 @@ import type { Storage } from '../database'
 import type { AdapterInboundEvent } from '../router/events'
 import { TokenBucket, checkLimits } from '../router/limits'
 import { QUOTA_REPLY } from '../router/quota'
+import { screenName } from './name-filter'
+import { calendarDayKey } from '../time'
+import type { VisitorNameReviewDecision } from '../types'
 
 /**
  * Website adapter (dev/ROADMAP.md §5): a plain public HTTP API behind
@@ -17,6 +20,8 @@ import { QUOTA_REPLY } from '../router/quota'
  * 和 visitorKey（密码），之后每次请求都带上这一对，不带一律 401。库里只存密码的哈希；身份号只隔离
  * 访客之间的记忆，任何访客都只有 public 权限。访客模式（guest）只发 g_ 码、不发密码，
  * 闲置 guestIdleMinutes 后作废，记录仍留在库里按 visitorTtlDays 删除。
+ * 申请 v_ 码必须带姓名（g_ 码不能取名，固定叫“访客”+ 码的前 6 位），姓名与码绑定并作为发送者名字交给模型；每次设定或修改
+ * 都先过本地违禁词库（name-filter.ts），没命中再经模型审查，不合格就不发码、不改名；每月成功修改次数受 renamesPerMonth 限制。
  */
 
 /** How the core delivers a protagonist message to a visitor. */
@@ -36,6 +41,10 @@ export interface WebServerDeps {
   receive(event: AdapterInboundEvent): Promise<boolean | 'limited'>
   /** Seconds until the daily quota resets, sent as Retry-After. */
   quotaResetSeconds(): number
+  /** Model review of a visitor name; throws when the review cannot run. */
+  reviewName(name: string): Promise<VisitorNameReviewDecision>
+  /** Story timezone; rename limits reset on its calendar month. */
+  timezone: string
   characterName: string
   visitorTtlDays: number
 }
@@ -43,7 +52,12 @@ export interface WebServerDeps {
 interface ChatMessage { id: string; role: 'visitor' | 'alice'; text: string; at: string }
 interface WebMessageRow { id: number; visitorId: string; role: ChatMessage['role']; text: string; clientId?: string; createdAt: string }
 interface Stream { visitorId: string; res: ServerResponse }
-interface VisitorRow { id: string; keyHash: string; guest?: boolean; chatted?: boolean; createdAt: string; lastSeenAt: string }
+interface VisitorRow {
+  id: string; keyHash: string; guest?: boolean; chatted?: boolean; createdAt: string; lastSeenAt: string
+  name?: string
+  /** Successful renames in renameMonth (YYYY-MM); the first name is not a rename. */
+  renameMonth?: string; renameCount?: number
+}
 
 /** v codes and keys may be typed by hand to recover a chat: short, case-insensitive, no 0/O/1/I/L. */
 const CODE_ALPHABET = '23456789ABCDEFGHJKMNPQRSTUVWXYZ'
@@ -53,7 +67,7 @@ const VISITOR_KEY = /^[2-9A-HJKMNP-Z]{8}$/
 const GUEST_ID = /^g_[A-Za-z0-9_-]{22}$/
 const MAX_BODY = 8 * 1024
 const MAX_TEXT = 2000
-const MAX_NICKNAME = 24
+const MAX_NAME = 24
 const HISTORY_LIMIT = 200
 const PING_MS = 25_000
 /** A turn may end without a reply (delayed or none); do not leave "typing" on forever. */
@@ -80,6 +94,8 @@ export class WebServer implements WebEndpoint {
   private failedPerIp = new TokenBucket(20, 3_600_000)
   private failedPerId = new TokenBucket(10, 3_600_000)
   private readonly startedAt = new Date()
+  /** One rename at a time per visitor, so concurrent requests cannot both pass the monthly check. */
+  private renaming = new Set<string>()
 
   constructor(private config: WebConfig, private storage: Storage, private deps: WebServerDeps) {
     this.perMinute = new TokenBucket(config.perVisitorPerMinute, 60_000)
@@ -166,9 +182,10 @@ export class WebServer implements WebEndpoint {
     }
     const routes: Record<string, [string, () => Promise<void>]> = {
       '/visitor': ['POST', () => this.postVisitor(req, res)],
+      '/name': ['POST', () => this.postName(req, res)],
       '/message': ['POST', () => this.postMessage(req, res)],
       '/history': ['GET', async () => this.history(res, await this.authorize(req, query.get('visitorId'), visitorKeyFrom(req, query)))],
-      '/events': ['GET', async () => this.events(req, res, await this.authorize(req, query.get('visitorId'), visitorKeyFrom(req, query)))],
+      '/events': ['GET', async () => this.events(req, res, (await this.authorize(req, query.get('visitorId'), visitorKeyFrom(req, query))).id)],
     }
     const match = routes[route]
     if (!match) throw new HttpError(404, 'Not found')
@@ -180,19 +197,81 @@ export class WebServer implements WebEndpoint {
   private async postVisitor(req: IncomingMessage, res: ServerResponse) {
     const body = await readJson(req)
     const ip = clientIp(req)
+    const guest = body.guest === true
+    const name = cleanName(body.name)
+    // A full code needs a name; a guest is always named after its code and cannot choose one.
+    if (guest && name) throw new HttpError(400, 'Guest codes cannot have a name', {}, { code: 'guest_no_name' })
+    if (!name && !guest) throw new HttpError(400, `name is required (1-${MAX_NAME} characters)`)
     this.limit([[this.perIpMinute, ip], [this.perIp, ip]])
-    const { visitorId, visitorKey } = await this.createVisitor(body.guest === true)
-    json(res, 201, { visitorId, ...(visitorKey ? { visitorKey } : {}) })
+    if (name) await this.reviewName(name)
+    const { visitorId, visitorKey } = await this.createVisitor(guest, name)
+    json(res, 201, guest
+      ? { visitorId, name: guestName(visitorId), renamesLeft: 0 }
+      : { visitorId, visitorKey, name, renamesLeft: this.config.renamesPerMonth })
+  }
+
+  /** Changes the bound name. The first name of a code issued without one is free; later ones count toward the month. */
+  private async postName(req: IncomingMessage, res: ServerResponse) {
+    const body = await readJson(req)
+    const name = cleanName(body.name)
+    if (!name) throw new HttpError(400, `name must be 1-${MAX_NAME} characters`)
+    const ip = clientIp(req)
+    const row = await this.authorize(req, body.visitorId, body.visitorKey)
+    if (row.guest) throw new HttpError(403, 'Guest codes cannot have a name', {}, { code: 'guest_no_name' })
+    if (this.renaming.has(row.id)) throw new HttpError(409, 'A name change is already in progress')
+    this.renaming.add(row.id)
+    try {
+      if (row.name === name) return json(res, 200, { name, renamesLeft: this.renamesLeft(row) })
+      const counts = !!row.name
+      if (counts && this.renamesLeft(row) <= 0) {
+        throw new HttpError(429, 'Monthly name change limit reached', {}, { code: 'rename_limit', renamesLeft: '0' })
+      }
+      // Every attempt costs a model call, so it shares the visitor and IP limits with messages.
+      this.limit([[this.perMinute, row.id], [this.perHour, row.id], [this.perIpMinute, ip], [this.perIp, ip]])
+      await this.reviewName(name)
+      const month = this.month()
+      const update: Partial<VisitorRow> = counts
+        ? { name, renameMonth: month, renameCount: (row.renameMonth === month ? row.renameCount ?? 0 : 0) + 1 }
+        : { name }
+      await this.storage.set(VISITORS, { id: row.id }, update)
+      json(res, 200, { name, renamesLeft: this.renamesLeft({ ...row, ...update }) })
+    } finally {
+      this.renaming.delete(row.id)
+    }
+  }
+
+  /** Word list first, then the model. 422 with the reviewer's reason when refused; 503 when the review itself fails, so no name passes unchecked. */
+  private async reviewName(name: string) {
+    // Clear cases are settled locally without spending a model call.
+    const screened = screenName(name, this.deps.characterName)
+    if (screened?.allowed) return
+    if (screened) throw new HttpError(422, 'Name rejected', {}, { code: 'name_rejected', reason: screened.reason ?? '这个名字不能使用' })
+    let review: VisitorNameReviewDecision
+    try {
+      review = await this.deps.reviewName(name)
+    } catch (error) {
+      console.warn('访客姓名审查失败。', error instanceof Error ? error.message : '')
+      throw new HttpError(503, 'Name review is not available right now', {}, { code: 'name_review_unavailable' })
+    }
+    if (!review.allowed) throw new HttpError(422, 'Name rejected', {}, { code: 'name_rejected', reason: review.reason || '这个名字不能使用' })
+  }
+
+  private month(now = new Date()) { return calendarDayKey(now, this.deps.timezone).slice(0, 7) }
+
+  private renamesLeft(row: VisitorRow) {
+    if (row.guest) return 0
+    const used = row.renameMonth === this.month() ? row.renameCount ?? 0 : 0
+    return Math.max(0, this.config.renamesPerMonth - used)
   }
 
   /** A new visitor. A full visitor's key is returned once and only its hash is stored; a guest gets no key. */
-  private async createVisitor(guest: boolean) {
+  private async createVisitor(guest: boolean, name: string) {
     const now = new Date()
     for (let attempt = 0; ; attempt++) {
       const visitorId = guest ? `g_${randomBytes(16).toString('base64url')}` : `v_${randomCode(8)}`
       const visitorKey = guest ? undefined : randomCode(8)
       try {
-        await this.storage.create(VISITORS, { id: visitorId, keyHash: visitorKey ? hashKey(visitorKey) : '', ...(guest ? { guest: true } : {}), createdAt: now, lastSeenAt: now })
+        await this.storage.create(VISITORS, { id: visitorId, keyHash: visitorKey ? hashKey(visitorKey) : '', ...(guest ? { guest: true } : {}), ...(name ? { name } : {}), createdAt: now, lastSeenAt: now })
         return { visitorId, visitorKey }
       } catch (error) {
         // The id is the primary key; a short v code can collide, so draw again.
@@ -233,7 +312,7 @@ export class WebServer implements WebEndpoint {
       if (!row || !VISITOR_KEY.test(key) || !timingSafeEqual(expected, actual)) return fail()
     }
     await this.storage.set(VISITORS, { id: visitorId }, { lastSeenAt: now })
-    return visitorId
+    return row! as VisitorRow
   }
 
   /** Hourly: idle guest codes expire, and identities that never chatted are dropped once idle for a day. */
@@ -250,9 +329,12 @@ export class WebServer implements WebEndpoint {
     }
   }
 
-  private async history(res: ServerResponse, visitorId: string) {
-    const rows = await this.storage.get(TABLE, { visitorId }, { sort: { id: 'desc' }, limit: HISTORY_LIMIT }) as WebMessageRow[]
-    json(res, 200, { visitorId, messages: rows.reverse().map(toChatMessage) })
+  private async history(res: ServerResponse, visitor: VisitorRow) {
+    const rows = await this.storage.get(TABLE, { visitorId: visitor.id }, { sort: { id: 'desc' }, limit: HISTORY_LIMIT }) as WebMessageRow[]
+    json(res, 200, {
+      visitorId: visitor.id, ...(visitorName(visitor) ? { name: visitorName(visitor) } : {}), renamesLeft: this.renamesLeft(visitor),
+      messages: rows.reverse().map(toChatMessage),
+    })
   }
 
   private async postMessage(req: IncomingMessage, res: ServerResponse) {
@@ -260,7 +342,8 @@ export class WebServer implements WebEndpoint {
     const text = typeof body.text === 'string' ? body.text.trim() : ''
     if (!text || text.length > MAX_TEXT) throw new HttpError(400, `text must be 1-${MAX_TEXT} characters`)
     const ip = clientIp(req)
-    const visitorId = await this.authorize(req, body.visitorId, body.visitorKey)
+    const visitor = await this.authorize(req, body.visitorId, body.visitorKey)
+    const visitorId = visitor.id
     const clientId = typeof body.clientId === 'string' && /^[\w-]{1,64}$/.test(body.clientId) ? body.clientId : undefined
     if (clientId) {
       // A network retry of an accepted message must not start a second turn.
@@ -272,7 +355,7 @@ export class WebServer implements WebEndpoint {
     const row = await this.storage.create(TABLE, { visitorId, role: 'visitor', text, ...(clientId ? { clientId } : {}), createdAt: now }) as WebMessageRow
     const accepted = await this.deps.receive({
       channel: 'web', sourceId: visitorId, participantKey: `web:${visitorId}`,
-      senderId: visitorId, senderName: cleanNickname(body.nickname), messageId: String(row.id),
+      senderId: visitorId, senderName: visitorName(visitor), messageId: String(row.id),
       text, receivedAt: now, reply: { send: content => this.send(visitorId, content) },
     }).catch(error => {
       console.warn('网站消息交给核心失败。', error instanceof Error ? error.message : '')
@@ -324,6 +407,16 @@ export class WebServer implements WebEndpoint {
   }
 }
 
+/**
+ * Guests cannot pick a name: they are 访客 plus the first six characters of
+ * their code. Only a prefix, because the whole code is the guest's credential
+ * and this name lands in prompts and stored records.
+ */
+function guestName(visitorId: string) { return `访客${visitorId.slice(2, 8)}` }
+
+/** '' for a full code issued before names existed; the core then uses its default label. */
+function visitorName(row: VisitorRow) { return row.guest ? guestName(row.id) : row.name ?? '' }
+
 function hashKey(key: string) { return createHash('sha256').update(key).digest('hex') }
 
 /** Uniform over CODE_ALPHABET: bytes past the last full multiple of its length are redrawn. */
@@ -359,9 +452,11 @@ function clientIp(req: IncomingMessage) {
   return (typeof header === 'string' && header.trim()) || 'local'
 }
 
-function cleanNickname(value: unknown) {
+/** '' when missing, empty after cleaning or too long; a long name is refused rather than cut, so what was reviewed is what is kept. */
+function cleanName(value: unknown) {
   if (typeof value !== 'string') return ''
-  return Array.from(value.replace(/[\p{Cc}\p{Cf}<>]/gu, '').replace(/\s+/g, ' ').trim()).slice(0, MAX_NICKNAME).join('')
+  const name = value.replace(/[\p{Cc}\p{Cf}<>]/gu, '').replace(/\s+/g, ' ').trim()
+  return Array.from(name).length <= MAX_NAME ? name : ''
 }
 
 async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {

@@ -42,6 +42,8 @@ export interface WebConfig {
   maxStreamsPerVisitor: number
   /** A guest code (no key) stops working after this many idle minutes. */
   guestIdleMinutes: number
+  /** Successful name changes allowed per calendar month (story timezone); 0 locks the name. */
+  renamesPerMonth: number
 }
 
 /** On/off is not here: the owner flips it with /tools (switches.ts). */
@@ -358,7 +360,7 @@ export const DEFAULT_CONFIG: Config = {
     skills: { dir: '~/AliceWorkspace/skills', maxChars: 20_000 },
     exec: { workdir: '~/AliceWorkspace', timeoutSeconds: 60, maxOutputChars: 8_000, approvalTtlMinutes: 10, maxPending: 3 } },
   web: { port: 8787, basePath: '/alice', serveRootPage: true, siteUrl: 'https://alice.ignat.ai',
-    perVisitorPerMinute: 6, perVisitorPerHour: 60, perIpPerMinute: 6, perIpPerHour: 60, maxStreamsPerVisitor: 3, guestIdleMinutes: 60 },
+    perVisitorPerMinute: 6, perVisitorPerHour: 60, perIpPerMinute: 6, perIpPerHour: 60, maxStreamsPerVisitor: 3, guestIdleMinutes: 60, renamesPerMonth: 3 },
   logging: { level: 'info', verbosity: 'standard', format: 'layered', colors: true, colorTheme: 'dark', kaomoji: true,
     logScriptPreview: false, logMessageContent: false, dumpRequests: false, previewLength: 500 },
 }
@@ -470,6 +472,7 @@ export function resolveConfig(input: unknown, env: NodeJS.ProcessEnv = {}): Conf
   for (const value of [web.port, web.perVisitorPerMinute, web.perVisitorPerHour, web.perIpPerMinute, web.perIpPerHour, web.maxStreamsPerVisitor, web.guestIdleMinutes]) {
     if (!Number.isInteger(value) || value < 1) throw new Error('web 中的端口、限流次数和分钟数必须是正整数。')
   }
+  if (!Number.isInteger(web.renamesPerMonth) || web.renamesPerMonth < 0) throw new Error('web.renamesPerMonth 必须是不小于 0 的整数。')
   if (web.port > 65535) throw new Error('web.port 最大 65535。')
   // One lowercase segment: the tunnel routes ^/<segment>(/|$) here and other services own the rest of the host.
   if (!/^\/[a-z0-9][a-z0-9-]*$/.test(web.basePath)) throw new Error('web.basePath 必须是单级路径，例如 /alice。')

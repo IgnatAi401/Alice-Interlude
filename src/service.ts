@@ -239,6 +239,12 @@ export class InterludeService {
   /** Enables website visitors; until then web events and web participants are rejected. */
   attachWeb(transport: WebEndpoint) { this.webTransport = transport }
 
+  /** Website name check (roadmap 5.2); a provider without it refuses every name rather than passing it. */
+  async reviewVisitorName(name: string) {
+    if (!this.narrator.reviewVisitorName) throw new Error('当前模型不支持访客姓名审查。')
+    return this.narrator.reviewVisitorName({ name, characterName: this.config.storyDefaults.characterName })
+  }
+
   get webRunning() { return !!this.webTransport?.running }
 
   /** /web on|off: the port opens or closes now, and the choice is kept for the next start. */
@@ -493,12 +499,12 @@ export class InterludeService {
   }
 
   /**
-   * A website visitor: the nickname is self-chosen display text only, and the
+   * A website visitor: the name is bound to the code and reviewed by the web adapter; it is display text only, and the
    * owner's configured profile/relationship are never inherited (2026-10-13).
    */
   private async ensureWebParticipant(story: InterludeStory, session: ChatIdentity, now: Date, knownExisting?: InterludeParticipant) {
     const existing = knownExisting ?? await this.findParticipant(session, story)
-    // The nickname is optional per message; omitting it keeps the last one.
+    // The adapter sends the name bound to the code; a rename shows up on the next message.
     const displayName = session.username.trim() || existing?.displayName || WEB_VISITOR_NAME
     if (existing) {
       if (existing.displayName === displayName && existing.storyId === story.id) return existing
@@ -520,7 +526,7 @@ export class InterludeService {
     }
     await this.appendEntry(story.id, {
       kind: 'participant-joined', actor: 'system',
-      content: `${participant.displayName} started chatting through the website.`,
+      content: `${participant.displayName} started chatting through the public API.`,
       occurredAt: now.toISOString(), metadata: { personId: participant.personId },
     }, now, participant.id, this.sourceAudience(participant))
     return participant
@@ -4150,8 +4156,8 @@ export function participantKeyOf(participant: Pick<InterludeParticipant, 'platfo
   return `${participant.platform === 'web' ? 'web' : 'tg'}:${participant.userId}`
 }
 
-const WEB_VISITOR_NAME = 'Website visitor'
-const WEB_VISITOR_PROFILE = 'A visitor chatting with the character through her public website. Not someone she knows personally.'
+const WEB_VISITOR_NAME = 'API visitor'
+const WEB_VISITOR_PROFILE = 'A visitor chatting with the character through her public API. Not someone she knows personally.'
 
 function sameParticipantEndpoint(participant: InterludeParticipant, session: ChatIdentity) {
   if (participant.platform !== session.platform || participant.selfId !== session.selfId) return false

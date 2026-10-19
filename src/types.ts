@@ -547,6 +547,19 @@ export interface NarrativeProvider {
   decide(request: NarrativeRequest, tools?: TurnTools): Promise<NarrativeDecision>
   /** A low-frequency side analysis; absent providers leave the trigger pending. */
   analyzeAlter?(request: AlterAnalysisRequest, config: AlterSystemConfig): Promise<AlterAnalysisDecision>
+  /** Website visitor name check; absent providers make the website refuse names (fail closed). */
+  reviewVisitorName?(request: VisitorNameReviewRequest): Promise<VisitorNameReviewDecision>
+}
+
+export interface VisitorNameReviewRequest {
+  name: string
+  characterName: string
+}
+
+export interface VisitorNameReviewDecision {
+  allowed: boolean
+  /** Short reason shown to the visitor when refused. */
+  reason?: string
 }
 
 export const emptyStorySetting = (): StorySetting => ({
