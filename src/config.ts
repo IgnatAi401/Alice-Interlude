@@ -38,6 +38,13 @@ export interface WebConfig {
   perVisitorPerHour: number
   perIpPerMinute: number
   perIpPerHour: number
+  /** Messages per IP over a rolling day, so one network cannot spend the shared daily quota. */
+  turnsPerIpPerDay: number
+  /** New identities (v_ and g_ together) per IP; attempts the name review refuses count too. */
+  newVisitorsPerIpPerHour: number
+  newVisitorsPerIpPerDay: number
+  /** New identities for the whole site per hour; caps rotating IPs and name-review calls. */
+  newVisitorsPerHour: number
   /** Simultaneous SSE connections per visitor; the oldest is closed beyond this. */
   maxStreamsPerVisitor: number
   /** A guest code (no key) stops working after this many idle minutes. */
@@ -365,7 +372,8 @@ export const DEFAULT_CONFIG: Config = {
     skills: { dir: '~/AliceWorkspace/skills', maxChars: 20_000 },
     exec: { workdir: '~/AliceWorkspace', timeoutSeconds: 60, maxOutputChars: 8_000, approvalTtlMinutes: 10, maxPending: 3 } },
   web: { port: 8787, basePath: '/alice', serveRootPage: true, siteUrl: 'https://alice.ignat.ai',
-    perVisitorPerMinute: 6, perVisitorPerHour: 60, perIpPerMinute: 6, perIpPerHour: 60, maxStreamsPerVisitor: 3, guestIdleMinutes: 60, renamesPerMonth: 3 },
+    perVisitorPerMinute: 6, perVisitorPerHour: 60, perIpPerMinute: 6, perIpPerHour: 60, turnsPerIpPerDay: 40,
+    newVisitorsPerIpPerHour: 5, newVisitorsPerIpPerDay: 10, newVisitorsPerHour: 30, maxStreamsPerVisitor: 3, guestIdleMinutes: 60, renamesPerMonth: 3 },
   logging: { level: 'info', verbosity: 'standard', format: 'layered', colors: true, colorTheme: 'dark', kaomoji: true,
     logScriptPreview: false, logMessageContent: false, dumpRequests: false, previewLength: 500 },
 }
@@ -464,7 +472,8 @@ export function resolveConfig(input: unknown, env: NodeJS.ProcessEnv = {}): Conf
     throw new Error('tools.maxSteps 最大 20，exec.timeoutSeconds 最大 600，exec.approvalTtlMinutes 最大 1440，exec.maxPending 最大 10。')
   }
   const web = config.web!
-  for (const value of [web.port, web.perVisitorPerMinute, web.perVisitorPerHour, web.perIpPerMinute, web.perIpPerHour, web.maxStreamsPerVisitor, web.guestIdleMinutes]) {
+  for (const value of [web.port, web.perVisitorPerMinute, web.perVisitorPerHour, web.perIpPerMinute, web.perIpPerHour, web.turnsPerIpPerDay,
+    web.newVisitorsPerIpPerHour, web.newVisitorsPerIpPerDay, web.newVisitorsPerHour, web.maxStreamsPerVisitor, web.guestIdleMinutes]) {
     if (!Number.isInteger(value) || value < 1) throw new Error('web 中的端口、限流次数和分钟数必须是正整数。')
   }
   if (!Number.isInteger(web.renamesPerMonth) || web.renamesPerMonth < 0) throw new Error('web.renamesPerMonth 必须是不小于 0 的整数。')

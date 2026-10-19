@@ -37,10 +37,12 @@ export class TokenBucket {
 /**
  * Several buckets that must all allow a request. Tokens are taken only when
  * every bucket passes, so a request rejected by the hourly limit does not also
- * drain the per-minute one.
+ * drain the per-minute one. `blocked` is the index of the check with the
+ * longest wait (-1 when the request passes), so callers can say which limit hit.
  */
 export function checkLimits(checks: Array<[TokenBucket, string]>, now = Date.now()) {
-  const retryAfter = Math.max(0, ...checks.map(([bucket, key]) => bucket.wait(key, now)))
+  const waits = checks.map(([bucket, key]) => bucket.wait(key, now))
+  const retryAfter = Math.max(0, ...waits)
   if (!retryAfter) for (const [bucket, key] of checks) bucket.take(key, now)
-  return retryAfter
+  return { retryAfter, blocked: retryAfter ? waits.indexOf(retryAfter) : -1 }
 }

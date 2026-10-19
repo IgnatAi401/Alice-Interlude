@@ -1,5 +1,6 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
+import { isIPv6 } from 'node:net'
 import type { WebConfig } from '../config'
 import type { Storage } from '../database'
 import type { AdapterInboundEvent } from '../router/events'
@@ -23,6 +24,7 @@ import type { VisitorNameReviewDecision } from '../types'
  * 闲置 guestIdleMinutes 后作废，记录仍留在库里按 visitorTtlDays 删除。
  * 申请 v_ 码必须带姓名（g_ 码不能取名，固定叫“访客”+ 码的前 6 位），姓名与码绑定并作为发送者名字交给模型；每次设定或修改
  * 都先过本地违禁词库（name-filter.ts），没命中再经模型审查，不合格就不发码、不改名；每月成功修改次数受 renamesPerMonth 限制。
+ * 身份能无限申请，所以花钱的限制都不挂在身份上：新身份按 IP 和全站单独限额，消息另有每 IP 每日上限；IPv6 按 /64 计一个 IP。
  */
 
 /** How the core delivers a protagonist message to a visitor. */
@@ -80,6 +82,12 @@ const TYPING_TIMEOUT_MS = 90_000
 const UNUSED_VISITOR_MS = 24 * 3_600_000
 const TABLE = 'interlude_web_message'
 const VISITORS = 'interlude_web_visitor'
+/** 429 bodies that name the limit, so the site can tell the visitor more than "too many requests". */
+const NEW_VISITOR_IP = { code: 'visitor_limit', error: 'Too many new identities from this network' }
+const NEW_VISITOR_SITE = { code: 'visitor_busy', error: 'Too many new visitors right now' }
+const IP_DAILY = { code: 'ip_daily_limit', error: 'Daily message limit for this network reached' }
+
+type Check = [TokenBucket, string, { code: string; error: string }?]
 
 class HttpError extends Error {
   constructor(public status: number, message: string, public headers: Record<string, string> = {}, public body: Record<string, string> = {}) { super(message) }
@@ -94,6 +102,10 @@ export class WebServer implements WebEndpoint {
   private perHour: TokenBucket
   private perIpMinute: TokenBucket
   private perIp: TokenBucket
+  private perIpDay: TokenBucket
+  private newPerIpHour: TokenBucket
+  private newPerIpDay: TokenBucket
+  private newSiteHour: TokenBucket
   // Short keys rely on these: a code can be guessed at most 10 times an hour, whatever the number of IPs.
   private failedPerIp = new TokenBucket(20, 3_600_000)
   private failedPerId = new TokenBucket(10, 3_600_000)
@@ -106,6 +118,10 @@ export class WebServer implements WebEndpoint {
     this.perHour = new TokenBucket(config.perVisitorPerHour, 3_600_000)
     this.perIpMinute = new TokenBucket(config.perIpPerMinute, 60_000)
     this.perIp = new TokenBucket(config.perIpPerHour, 3_600_000)
+    this.perIpDay = new TokenBucket(config.turnsPerIpPerDay, 86_400_000)
+    this.newPerIpHour = new TokenBucket(config.newVisitorsPerIpPerHour, 3_600_000)
+    this.newPerIpDay = new TokenBucket(config.newVisitorsPerIpPerDay, 86_400_000)
+    this.newSiteHour = new TokenBucket(config.newVisitorsPerHour, 3_600_000)
   }
 
   get running() { return !!this.server }
@@ -121,7 +137,8 @@ export class WebServer implements WebEndpoint {
     this.server = server
     this.intervals.push(setInterval(() => { for (const stream of this.streams) stream.res.write(': ping\n\n') }, PING_MS))
     this.intervals.push(setInterval(() => {
-      for (const bucket of [this.perMinute, this.perHour, this.perIpMinute, this.perIp, this.failedPerIp, this.failedPerId]) bucket.prune()
+      for (const bucket of [this.perMinute, this.perHour, this.perIpMinute, this.perIp, this.perIpDay,
+        this.newPerIpHour, this.newPerIpDay, this.newSiteHour, this.failedPerIp, this.failedPerId]) bucket.prune()
       void this.pruneVisitors().catch(() => console.warn('访客身份清理失败。'))
     }, 3_600_000))
   }
@@ -197,7 +214,7 @@ export class WebServer implements WebEndpoint {
     await match[1]()
   }
 
-  /** Issues a new identity; the IP limit runs first, so it caps new identities too. */
+  /** Issues a new identity. New identities have their own per-IP and site-wide limits, checked before the name review spends a model call. */
   private async postVisitor(req: IncomingMessage, res: ServerResponse) {
     const body = await readJson(req)
     const ip = clientIp(req)
@@ -206,7 +223,7 @@ export class WebServer implements WebEndpoint {
     // A full code needs a name; a guest is always named after its code and cannot choose one.
     if (guest && name) throw new HttpError(400, 'Guest codes cannot have a name', {}, { code: 'guest_no_name' })
     if (!name && !guest) throw new HttpError(400, `name is required (1-${MAX_NAME} characters)`)
-    this.limit([[this.perIpMinute, ip], [this.perIp, ip]])
+    this.limit([[this.newPerIpHour, ip, NEW_VISITOR_IP], [this.newPerIpDay, ip, NEW_VISITOR_IP], [this.newSiteHour, '*', NEW_VISITOR_SITE]])
     if (name) await this.reviewName(name)
     const { visitorId, visitorKey } = await this.createVisitor(guest, name)
     json(res, 201, guest
@@ -339,7 +356,7 @@ export class WebServer implements WebEndpoint {
       const [seen] = await this.storage.get(TABLE, { visitorId, clientId }, { limit: 1 }) as WebMessageRow[]
       if (seen) return json(res, 202, { id: String(seen.id), visitorId })
     }
-    this.limit([[this.perMinute, visitorId], [this.perHour, visitorId], [this.perIpMinute, ip], [this.perIp, ip]])
+    this.limit([[this.perMinute, visitorId], [this.perHour, visitorId], [this.perIpMinute, ip], [this.perIp, ip], [this.perIpDay, ip, IP_DAILY]])
     const now = new Date()
     const row = await this.storage.create(TABLE, { visitorId, role: 'visitor', text, ...(clientId ? { clientId } : {}), createdAt: now }) as WebMessageRow
     const accepted = await this.deps.receive({
@@ -391,9 +408,12 @@ export class WebServer implements WebEndpoint {
     if (active || timer) this.push(visitorId, 'typing', { active })
   }
 
-  private limit(checks: Array<[TokenBucket, string]>) {
-    const retryAfter = checkLimits(checks)
-    if (retryAfter) throw new HttpError(429, 'Too many requests', { 'Retry-After': String(retryAfter) })
+  /** 429 with the code of whichever limit needs the longest wait; plain 'Too many requests' for the short ones. */
+  private limit(checks: Check[]) {
+    const { retryAfter, blocked } = checkLimits(checks.map(([bucket, key]) => [bucket, key]))
+    if (!retryAfter) return
+    const named = checks[blocked][2]
+    throw new HttpError(429, named?.error ?? 'Too many requests', { 'Retry-After': String(retryAfter) }, named ? { code: named.code } : {})
   }
 }
 
@@ -429,10 +449,27 @@ function normalizeVisitorId(value: unknown) {
   return /^v_/i.test(trimmed) && VISITOR_ID.test(visitor) ? visitor : undefined
 }
 
-/** Only the tunnel's header is trusted: the server listens on loopback, so no client reaches it directly. */
+/**
+ * The key every per-IP limit uses. Only the tunnel's header is trusted: the server listens on loopback, so no
+ * client reaches it directly. IPv6 counts by /64, since one home line usually holds a whole /64 and can rotate through it.
+ */
 function clientIp(req: IncomingMessage) {
   const header = req.headers['cf-connecting-ip']
-  return (typeof header === 'string' && header.trim()) || 'local'
+  const ip = typeof header === 'string' ? header.trim() : ''
+  if (!ip) return 'local'
+  return isIPv6(ip) ? ipv6Prefix(ip) : ip
+}
+
+/** The first four groups written out ('2001:db8:0:1::/64'); an IPv4-mapped address counts as its IPv4 address. */
+export function ipv6Prefix(ip: string) {
+  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(ip)
+  if (mapped) return mapped[1]
+  const [head, tail] = ip.split('%')[0].split('::')
+  const left = head ? head.split(':') : [], right = tail ? tail.split(':') : []
+  // A trailing dotted IPv4 part fills two groups.
+  const width = (groups: string[]) => groups.reduce((sum, group) => sum + (group.includes('.') ? 2 : 1), 0)
+  const groups = tail === undefined ? left : [...left, ...Array<string>(8 - width(left) - width(right)).fill('0'), ...right]
+  return `${groups.slice(0, 4).map(group => parseInt(group, 16).toString(16)).join(':')}::/64`
 }
 
 /** '' when missing, empty after cleaning or too long; a long name is refused rather than cut, so what was reviewed is what is kept. */

@@ -239,6 +239,10 @@ telegram:
 #   perVisitorPerHour: 60
 #   perIpPerMinute: 6
 #   perIpPerHour: 60
+#   turnsPerIpPerDay: 40            # 每个 IP 一天（滚动 24 小时）最多发几条消息，换身份也一样
+#   newVisitorsPerIpPerHour: 5      # 每个 IP 每小时、每天最多申请几个新身份（v_、g_ 合计）
+#   newVisitorsPerIpPerDay: 10
+#   newVisitorsPerHour: 30          # 全站每小时最多发几个新身份
 #   maxStreamsPerVisitor: 3
 #   guestIdleMinutes: 60
 #   renamesPerMonth: 3              # 0 为禁止改名

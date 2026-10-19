@@ -113,6 +113,10 @@ web:
   perVisitorPerHour: 60
   perIpPerMinute: 6
   perIpPerHour: 60
+  turnsPerIpPerDay: 40
+  newVisitorsPerIpPerHour: 5
+  newVisitorsPerIpPerDay: 10
+  newVisitorsPerHour: 30
   maxStreamsPerVisitor: 3
   guestIdleMinutes: 60
   renamesPerMonth: 3
@@ -121,7 +125,11 @@ web:
 - `basePath`：Alice 在 `api.ignat.ai` 上占用的一级路径，其他路径留给以后的服务。公网上只有 `<basePath>/api/*` 转到 Alice，`/` 与 `<basePath>/` 由独立的文档站提供（见部署说明）。
 - `serveRootPage`：本机 `127.0.0.1:<web.port>/` 是否显示总览页。公网的根路径已由文档站接管，这一项只影响本机检查，可保持默认。
 - `siteUrl`：说明页上“去聊天”的链接，留空则不显示。
-- 限流：每个访客每分钟、每小时的消息数，每个 IP 每分钟、每小时的请求数（消息与申请身份码合计，默认与单个访客相同：6 条/分钟、60 条/小时），超出返回 429。另有固定的输错限制：同一 IP 每小时最多输错 20 次、同一个码每小时最多被输错 10 次，超过后返回 429（正确的密码也要等）。
+- 限流：每个访客每分钟、每小时的消息数，每个 IP 每分钟、每小时的消息数（默认与单个访客相同：6 条/分钟、60 条/小时），超出返回 429。身份码可以随便申请，所以真正管用的限制都按 IP 算，IPv6 按 /64 前缀算一个 IP（家用宽带通常分到整段 /64，可以随意换地址）：
+  - `turnsPerIpPerDay`：每个 IP 一天（滚动 24 小时）最多发几条消息，默认 40，换多少身份都一样；超出返回 429（`code: "ip_daily_limit"`）。这样一个人用不光全站的每日轮数。学校、公司或手机网络里很多人共用一个 IP 时可以调大。
+  - `newVisitorsPerIpPerHour` / `newVisitorsPerIpPerDay`：每个 IP 每小时、每天最多申请几个新身份（正式身份和访客模式合计，姓名被拒的尝试也算），默认 5 和 10；超出返回 429（`code: "visitor_limit"`）。申请身份不再占用消息的限额。
+  - `newVisitorsPerHour`：全站每小时最多发几个新身份，默认 30，用来挡换着 IP 批量申请，也限住了姓名审查的模型调用；超出返回 429（`code: "visitor_busy"`），已有身份不受影响。
+  - 这些计数都在内存里，重启后清零。另有固定的输错限制：同一 IP 每小时最多输错 20 次、同一个码每小时最多被输错 10 次，超过后返回 429（正确的密码也要等）。
 - `guestIdleMinutes`：访客码闲置多少分钟后作废，默认 60。
 - `renamesPerMonth`：每个身份每月（按故事时区的自然月）最多改名几次，默认 3；`0` 表示不能改名。
 - 同时开启 `memory.consolidateEnabled`，访客记录（含作废访客码留下的记录）、网页聊天记录和闲置的身份号才会按 `memory.visitorTtlDays`（默认 30 天）删除，与说明页告知一致。

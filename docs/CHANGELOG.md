@@ -2,6 +2,7 @@
 
 ## 未发布
 
+- 网站接口防刷身份：申请身份码改为单独限额（新配置 `web.newVisitorsPerIpPerHour` 默认 5、`web.newVisitorsPerIpPerDay` 默认 10、全站 `web.newVisitorsPerHour` 默认 30，超出分别返回 429 `code: "visitor_limit"` / `"visitor_busy"`），不再占用消息的 IP 限额；新增每个 IP 每天的消息上限 `web.turnsPerIpPerDay`（默认 40，超出返回 429 `code: "ip_daily_limit"`），一个人换多少身份都用不光全站每日轮数；所有按 IP 的限制对 IPv6 按 /64 前缀计。
 - 主人私聊时，Alice 能看到最近几位访客（其他私聊、群聊、网站）的最后几句对话，包在 `<visitor_notes>` 里作为引用资料；新增 `memory.visitorDigestLimit`（默认 5 位，0 关闭）、`memory.visitorDigestDays`（默认 3 天）。带了访客资料的回合写出的事实一律为私密；后台推进不再读取访客记录。
 - 部署调整：`api.ignat.ai` 上给人看的页面（`/`、`/alice/` 和其余路径的 404）改由独立的文档站（`API-Page` 项目，Cloudflare Worker 路由）提供；Tunnel 的 ingress 只转发 `/alice/api/*`，并需在 Cloudflare 为 `api.ignat.ai/alice/api/*` 建一条不运行 Worker 的路由。程序行为不变，Alice 内置说明页只在本机可见。步骤见 `docs/guide/DEPLOYMENT.md` 第 5 节。
 - 配置文件改为 YAML：程序读取 `config.yaml`（不再读取 `config.json`，旧部署需按新模板改写），模板为 `config.example.yaml`。模板与 `.env.example` 列出全部可配置项，可选项以 `#` 注释给出默认值。
