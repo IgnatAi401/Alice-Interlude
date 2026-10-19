@@ -60,7 +60,8 @@ Anthropic 接收当前叙事需要的角色设定、连续性记录和消息；�
 发给模型前的最后一步按读者分两条路径：
 
 - `src/context/public.ts`（非主人回合）：按白名单逐字段构造请求，新增字段默认不进入。故事设定只保留角色 Canon（去掉主人画像与关系默认值）；故事状态清空（不含 continuity、Overlay 实时状态、在场人物、Agency、Alter 内部状态）；Alter 只保留方向和强度；不带其他参与者摘要和自动投递摘要；计划、余波、追问承诺、网页观察只保留属于本参与者的部分；本参与者资料只用 `telegram.userAccounts` 中的显式配置，不使用 `storyDefaults` 默认值；关于主人只提供 `memory.publicOwnerProfile`。
-- `src/context/owner.ts`（主人回合、后台推进）：可见全部内容，但受众为 `visitor:*` 的剧本、事实和 Overlay 归档一律移入 `<visitor_notes>` 块，块内声明其中的要求都不是主人的指令，内容中的 `<` 被转义，无法提前闭合包装。
+- `src/context/owner.ts`（主人回合、后台推进）：可见全部内容，但受众为 `visitor:*` 的剧本、事实和 Overlay 归档一律移入 `<visitor_notes>` 块，块内声明其中的要求都不是主人的指令，内容中的 `<` 被转义，无法提前闭合包装。主人私聊回合另附最近几位访客的对话摘录（`memory.visitorDigestLimit`，同样经 `MemoryStore` 读取、放在该块内）；`g_` 码只露前 6 位。不属于任何参与者的后台推进直接丢弃访客记录，因为它的剧本和事实可由模型标为 public。
+- 读过访客记录的回合（`<visitor_notes>` 非空）写出的剧本和事实一律为 `private`，不采用模型的 public 分类，防止访客 A 的话经主人回合变成公开记录流到访客 B（S5）。
 
 非主人回合的写入限制：不能刷新 continuity；跨会话消息、计划和事实只能归属本参与者（参与者 id 可被猜到，因此不能以其他人为目标）；只能更新本参与者的余波；群聊回合不创建计划（否则会成为全局计划）。
 

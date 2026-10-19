@@ -2,6 +2,7 @@
 
 ## 未发布
 
+- 主人私聊时，Alice 能看到最近几位访客（其他私聊、群聊、网站）的最后几句对话，包在 `<visitor_notes>` 里作为引用资料；新增 `memory.visitorDigestLimit`（默认 5 位，0 关闭）、`memory.visitorDigestDays`（默认 3 天）。带了访客资料的回合写出的事实一律为私密；后台推进不再读取访客记录。
 - 部署调整：`api.ignat.ai` 上给人看的页面（`/`、`/alice/` 和其余路径的 404）改由独立的文档站（`API-Page` 项目，Cloudflare Worker 路由）提供；Tunnel 的 ingress 只转发 `/alice/api/*`，并需在 Cloudflare 为 `api.ignat.ai/alice/api/*` 建一条不运行 Worker 的路由。程序行为不变，Alice 内置说明页只在本机可见。步骤见 `docs/guide/DEPLOYMENT.md` 第 5 节。
 - 配置文件改为 YAML：程序读取 `config.yaml`（不再读取 `config.json`，旧部署需按新模板改写），模板为 `config.example.yaml`。模板与 `.env.example` 列出全部可配置项，可选项以 `#` 注释给出默认值。
 - 网站接口去掉旧数据兼容：所有 `v_` 码都有姓名，`/api/history` 一定返回 `name`，每次成功改名都计次；`/api/history` 的密码只认 `X-Visitor-Key` 请求头（只有 `/api/events` 接受查询参数）；身份发出第一条消息即标记为已聊天，清理时不再回查聊天记录。配置里残留 `tools.enabled`、`web.enabled`、`sharedStory.managerAccounts` 时改为通用的“不支持的配置项”报错。

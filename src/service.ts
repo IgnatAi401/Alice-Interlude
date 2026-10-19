@@ -15,12 +15,12 @@ import type { InboundEvent, ReplyHandle } from './router/events'
 import { resolveTier } from './router/tiers'
 import { Audience, ClassifiedAudience, Viewer, derivedAudience, normalizeAudience, visitorAudience } from './memory/audience'
 import { MEMORY_REF_TABLES, MemoryRef, MemoryStore, OWNER_VIEWER, PUBLIC_VIEWER, layerAudience } from './memory/store'
-import { ownerNarrativeRequest } from './context/owner'
+import { ownerNarrativeRequest, readVisitorDigest } from './context/owner'
 import { publicDigestRequest, publicNarrativeRequest } from './context/public'
 import { resolve } from 'node:path'
 import { calendarDayKey, formatLogTime, localClockMinutes } from './time'
 import { EXPIRED_PLACEHOLDER, consolidationRequest, duplicateMerges, validSupersessions, visitorExpiryCutoff } from './memory/consolidate'
-import { AgencyConfig, AgencyWindowState, AlterSystemConfig, AlterSystemState, AutomaticDeliverySummary, CompactionDecision, DeliveryState, EmotionalOffsetPrompt, FactDraft, FollowUpCommitmentDraft, FollowUpResolutionDraft, GroupContext, GroupMessageContext, IntentDraft, InterludeArc, InterludeParticipant, InterludeScene, InterludeStory, NarrativeCompactor, NarrativeDecision, NarrativeFact, NarrativeImage, NarrativeIntent, NarrativeInteraction, NarrativeProvider, NarrativeRequest, OutgoingMessageDraft, OverlaySnapshot, ParticipantState, PublicDigestDecision, ProactiveContactDraft, ScriptEntry, ScriptEntryDraft, StatePatchDraft, StatePatchProposal, StorySetting, StoryState, WebObservation, emptyParticipantState, emptyStorySetting, emptyStoryState } from './types'
+import { AgencyConfig, AgencyWindowState, AlterSystemConfig, AlterSystemState, AutomaticDeliverySummary, CompactionDecision, DeliveryState, EmotionalOffsetPrompt, FactDraft, FollowUpCommitmentDraft, FollowUpResolutionDraft, GroupContext, GroupMessageContext, IntentDraft, InterludeArc, InterludeParticipant, InterludeScene, InterludeStory, NarrativeCompactor, NarrativeDecision, NarrativeFact, NarrativeImage, NarrativeIntent, NarrativeInteraction, NarrativeProvider, NarrativeRequest, OutgoingMessageDraft, OverlaySnapshot, ParticipantState, PublicDigestDecision, ProactiveContactDraft, ScriptEntry, ScriptEntryDraft, StatePatchDraft, StatePatchProposal, StorySetting, StoryState, VisitorNote, WebObservation, emptyParticipantState, emptyStorySetting, emptyStoryState } from './types'
 import { clampNumber, clip, isRecord, normalizeFact, randomInteger, sameTimestamp, toDate } from './util'
 import { normalizeBrowserIntentDraft } from './web-policy'
 import { WebObserver } from './web-observer'
@@ -1369,7 +1369,7 @@ export class InterludeService {
         return
       }
       const superseded = batch.flatMap(message => message.supersededIntents)
-      const { decision, succeeded, effectiveNow, immediateObservations, toolCalls, toolTurnId: turnId } = await this.tryDecide(
+      const { decision, succeeded, effectiveNow, immediateObservations, toolCalls, toolTurnId: turnId, sawVisitorRecords } = await this.tryDecide(
         snapshot.story, snapshot.participant, 'user-message', snapshot.from, snapshot.now, userMessage, snapshot.due, superseded, undefined, images,
       )
       toolTurnId = turnId
@@ -1394,7 +1394,7 @@ export class InterludeService {
           && typeof decision.interaction.reply.content === 'string'
           && !!decision.interaction.reply.content.trim()
         if (commitsFirstReply) turn.firstMessageCommittedRequestId = requestId
-        const messages = await this.persistDecision(current, currentParticipant, decision, snapshot.from, effectiveNow, true, 'user-message')
+        const messages = await this.persistDecision(current, currentParticipant, decision, snapshot.from, effectiveNow, true, 'user-message', [], undefined, sawVisitorRecords)
         if (succeeded) {
           await this.dbSet('interlude_story', { id: current.id }, { cursorAt: effectiveNow, updatedAt: now })
           if (snapshot.due.length) await this.dbSet('interlude_intent', { id: { $in: snapshot.due.map(intent => intent.id) } }, { status: 'completed', updatedAt: now })
@@ -1587,10 +1587,10 @@ export class InterludeService {
         : 'advance'
       this.reportOperation('standard', 'info', story, phase,
         '即将执行自动写作 类型=%s 时间段=%s→%s', phaseLabel(phase), formatLogTime(from, story.setting.timezone), formatLogTime(now, story.setting.timezone))
-      const { decision, succeeded } = await this.tryDecide(story, followUpParticipant ?? null, phase, from, now, undefined, [])
+      const { decision, succeeded, sawVisitorRecords } = await this.tryDecide(story, followUpParticipant ?? null, phase, from, now, undefined, [])
       if (succeeded) {
         const permitMessages = phase === 'conversation-follow-up' || this.config.runtime.allowProactiveMessages
-        messages.push(...await this.persistDecision(story, followUpParticipant ?? null, decision, from, now, permitMessages, phase))
+        messages.push(...await this.persistDecision(story, followUpParticipant ?? null, decision, from, now, permitMessages, phase, [], undefined, sawVisitorRecords))
         await this.dbSet('interlude_story', { id: story.id }, { cursorAt: now, updatedAt: now })
         advanced = true
       }
@@ -1611,10 +1611,10 @@ export class InterludeService {
       const dueParticipant = dueParticipantId ? await this.getParticipant(dueParticipantId) : undefined
       this.reportOperation('standard', 'info', current, 'intent-due',
         '即将处理到期计划 数量=%d 类型=%s 参与者=%s', dueBatch.length, Array.from(new Set(dueBatch.map(intent => intent.type))).join(','), dueParticipant?.id || '全局')
-      const { decision, succeeded, toolCalls, toolTurnId } = await this.tryDecide(current, dueParticipant ?? null, 'intent-due', dueFrom, now, undefined, dueBatch)
+      const { decision, succeeded, toolCalls, toolTurnId, sawVisitorRecords } = await this.tryDecide(current, dueParticipant ?? null, 'intent-due', dueFrom, now, undefined, dueBatch)
       const permitMessages = this.config.runtime.allowProactiveMessages || dueBatch.some(intent => intent.payload?.userInitiated === true)
       if (dueParticipant) await this.recordToolActivity(current.id, dueParticipant, toolCalls, now)
-      messages.push(...await this.persistDecision(current, dueParticipant ?? null, decision, dueFrom, now, permitMessages, 'intent-due', dueBatch))
+      messages.push(...await this.persistDecision(current, dueParticipant ?? null, decision, dueFrom, now, permitMessages, 'intent-due', dueBatch, undefined, sawVisitorRecords))
       // Here the buttons may arrive just before Alice's reply, which the caller sends after this pass.
       if (toolTurnId) {
         if (succeeded) await this.activateApprovals(toolTurnId)
@@ -1656,7 +1656,7 @@ export class InterludeService {
     return messages
   }
 
-  private async decide(story: InterludeStory, participant: InterludeParticipant | null, phase: NarrativeRequest['phase'], from: Date, now: Date, userMessage: string | undefined, dueIntents: NarrativeIntent[], supersededIntents: NarrativeIntent[] = [], groupContext?: GroupContext, images: NarrativeImage[] = [], extraWebContext: WebObservation[] = [], outputRecovery = false, tools?: TurnToolSession) {
+  private async decide(story: InterludeStory, participant: InterludeParticipant | null, phase: NarrativeRequest['phase'], from: Date, now: Date, userMessage: string | undefined, dueIntents: NarrativeIntent[], supersededIntents: NarrativeIntent[] = [], groupContext?: GroupContext, images: NarrativeImage[] = [], extraWebContext: WebObservation[] = [], outputRecovery = false, tools?: TurnToolSession, visitorDigest: VisitorNote[] = []) {
     // 这里是主模型上下文的唯一入口。recentEntries 保留近距离质感，场景、弧线和
     // facts 负责把很长的过去压缩成连续性线索。参与者摘要让模型知道角色
     // 同时还在与谁维系关系，而不是把每个聊天当成独立世界。
@@ -1751,13 +1751,28 @@ export class InterludeService {
     // A website visitor gets the fixed host description, never a Telegram account profile.
     const account = participant?.platform === 'web' ? { profile: WEB_VISITOR_PROFILE, relationship: '' }
       : participant ? this.userAccountRule(participant.userId) : undefined
-    return this.narrator.decide(viewer.tier === 'owner'
-      ? ownerNarrativeRequest(draft)
+    const request = viewer.tier === 'owner'
+      ? ownerNarrativeRequest(draft, { keepVisitorRecords: !!participant, digest: visitorDigest })
       : publicNarrativeRequest(draft, {
         accountProfile: account ? { profile: account.profile, relationship: account.relationship } : undefined,
         publicOwnerProfile: this.memoryConfig.publicOwnerProfile ?? '',
         publicOverlay: await this.publicOverlay(story.id),
-      }), tools)
+      })
+    // persistDecision keeps everything written by a turn that read visitor records private.
+    return { decision: await this.narrator.decide(request, tools), sawVisitorRecords: !!request.visitorNotes?.length }
+  }
+
+  /** Recent visitor lines for an owner chat turn (roadmap §4.7); background and other chats get none. */
+  private async visitorDigestFor(story: InterludeStory, participant: InterludeParticipant | null, phase: NarrativeRequest['phase'], groupContext: GroupContext | undefined, now: Date) {
+    if (groupContext || !participant || !this.isOwnerParticipant(participant)) return []
+    if (phase !== 'user-message' && phase !== 'intent-due') return []
+    const participants = await this.participants(story.id, true)
+    return readVisitorDigest(this.store, story.id, {
+      visitors: this.memoryConfig.visitorDigestLimit ?? 5,
+      days: this.memoryConfig.visitorDigestDays ?? 3,
+      now,
+      names: new Map(participants.map(item => [participantKeyOf(item), item.displayName])),
+    })
   }
 
   /**
@@ -1953,8 +1968,15 @@ export class InterludeService {
       '模型调用开始 任务=主叙事 模型=%s 参与者=%s 时间段=%s→%s 到期计划=%d',
       this.mainModelLabel(), participant?.id || '全局', formatLogTime(from, story.setting.timezone), formatLogTime(now, story.setting.timezone), dueIntents.length)
     const tools = await this.turnTools(story, participant, phase, dueIntents, groupContext)
+    let sawVisitorRecords = false
     try {
-      let decision = await this.decide(story, participant, phase, from, effectiveNow, userMessage, dueIntents, supersededIntents, groupContext, images, [], false, tools)
+      const visitorDigest = await this.visitorDigestFor(story, participant, phase, groupContext, now)
+      const decideOnce = async (observations: WebObservation[], recovery: boolean) => {
+        const result = await this.decide(story, participant, phase, from, effectiveNow, userMessage, dueIntents, supersededIntents, groupContext, images, observations, recovery, tools, visitorDigest)
+        sawVisitorRecords ||= result.sawVisitorRecords
+        return result.decision
+      }
+      let decision = await decideOnce([], false)
       const immediate = phase === 'user-message' && participant && !groupContext && this.web.config.enabled && this.web.config.mode === 'allow-immediate'
         ? decision.browserIntents?.map(intent => normalizeBrowserIntentDraft(intent, this.web.config)).find(intent => intent?.timing === 'immediate')
         : undefined
@@ -1967,12 +1989,12 @@ export class InterludeService {
         const observation = await this.web.collect(story, immediate, participant?.id ?? '', null, new Date(), false)
         immediateObservations = [observation]
         effectiveNow = new Date()
-        decision = await this.decide(story, participant, phase, from, effectiveNow, userMessage, dueIntents, supersededIntents, groupContext, images, immediateObservations, false, tools)
+        decision = await decideOnce(immediateObservations, false)
       }
       if (requiresVisibleReplyRecovery(phase, groupContext, decision)) {
         this.reportOperation('standard', 'warn', story, phase,
           '结构化可见回复缺失，已抛弃本次未落库剧本并重新写作')
-        decision = await this.decide(story, participant, phase, from, effectiveNow, userMessage, dueIntents, supersededIntents, groupContext, images, immediateObservations, true, tools)
+        decision = await decideOnce(immediateObservations, true)
         if (requiresVisibleReplyRecovery(phase, groupContext, decision)) {
           throw new Error('Narrative provider omitted the required visible-reply structure after one recovery attempt.')
         }
@@ -1993,6 +2015,7 @@ export class InterludeService {
         immediateObservations,
         toolCalls: tools?.calls ?? [],
         toolTurnId: tools?.turnId,
+        sawVisitorRecords,
       }
       if (this.config.logging?.logScriptPreview && result.decision.script) {
         this.report('info', story, phase, '当前剧本内容：\n%s', result.decision.script.slice(0, this.config.logging.previewLength))
@@ -2003,7 +2026,7 @@ export class InterludeService {
       return result
     } catch (error) {
       this.report('warn', story, phase, '模型调用失败 任务=主叙事 耗时=%dms 错误=%s', Date.now() - startedAt, error)
-      return { decision: {}, succeeded: false, effectiveNow, immediateObservations, toolCalls: tools?.calls ?? [], toolTurnId: tools?.turnId }
+      return { decision: {}, succeeded: false, effectiveNow, immediateObservations, toolCalls: tools?.calls ?? [], toolTurnId: tools?.turnId, sawVisitorRecords }
     }
   }
 
@@ -2018,6 +2041,8 @@ export class InterludeService {
     contextIntents: NarrativeIntent[] = [],
     /** Set for turns that are not tied to a participant but still come from a public chat (groups). */
     sourceOverride?: Audience,
+    /** The prompt quoted visitor records: nothing this turn writes may become public (S5). */
+    sawVisitorRecords = false,
   ) {
     // 先规范化，再写库：不信任模型给出的时间、长度和结构，尤其不能让未来剧情落库。
     const allParticipants = await this.participants(story.id)
@@ -2040,7 +2065,7 @@ export class InterludeService {
     )
     // Without a participant (groups) an intent would become global and surface unwrapped in owner turns.
     if (publicTurn && !participant) decision.intents = []
-    const scriptAudience = sourceOverride || participant ? turnSource : decision.scriptAudience
+    const scriptAudience = sourceOverride || participant ? turnSource : sawVisitorRecords ? 'private' : decision.scriptAudience
     let scriptEntry: ScriptEntry | undefined
     if (decision.script) {
       scriptEntry = await this.appendEntry(story.id, {
@@ -2055,7 +2080,7 @@ export class InterludeService {
     for (const fact of decision.facts) {
       await this.upsertFact(story.id, {
         ...fact, participantId: fact.participantId ?? '', sourceEntryIds: scriptEntry ? [scriptEntry.id] : [],
-      }, derivedAudience([turnSource], fact.audience), now)
+      }, sawVisitorRecords && turnSource === 'private' ? 'private' : derivedAudience([turnSource], fact.audience), now)
     }
     for (const intent of decision.intents) {
       // A reminder or promise created while handling a user's message is a

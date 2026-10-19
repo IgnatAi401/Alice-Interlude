@@ -517,6 +517,8 @@ export interface NarrativeRequest {
 
 export interface VisitorNote {
   audience: string
+  /** Display name of the visitor, when known (recent-visitor digest). */
+  name?: string
   source: 'script' | 'fact' | 'overlay'
   kind: string
   content: string

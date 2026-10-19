@@ -148,6 +148,10 @@ export interface MemoryConfig {
   consolidateAt?: string
   /** Visitor records older than this are deleted by consolidation; 0 keeps them. */
   visitorTtlDays?: number
+  /** Owner chat turns get the latest lines of this many recent visitors in <visitor_notes>; 0 turns it off. */
+  visitorDigestLimit?: number
+  /** Only visitors active within this many days appear in that digest. */
+  visitorDigestDays?: number
 }
 
 export interface RuntimeConfig {
@@ -294,6 +298,7 @@ export const DEFAULT_MEMORY_CONFIG: MemoryConfig = {
   overlayWeeklySummaryCharacters: 1_600, overlayMonthlySummaryCharacters: 2_400,
   publicOwnerProfile: '', publicDigestEnabled: false, publicDigestEntryThreshold: 20,
   consolidateEnabled: false, consolidateAt: '04:00', visitorTtlDays: 30,
+  visitorDigestLimit: 5, visitorDigestDays: 3,
 }
 
 /** Programmatic callers may omit numeric fields. Normalise them so one

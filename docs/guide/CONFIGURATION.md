@@ -77,6 +77,7 @@ telegram:
 - `runtime.allowProactiveMessages`：是否允许主动可见联系，默认关闭。
 - `memory`：场景压缩阈值、事实数量、人物变化证据和冷却期；检索为全文索引（中文三字片段）与重要度排序。
 - `memory.publicOwnerProfile`：非主人聊天（其他私聊、群聊，以后的网站）里 Alice 可以知道的主人信息，默认为空。这些聊天看不到 `storyDefaults.userProfile`、`relationship` 和主人的私密记忆；只在这里写愿意公开的内容。
+- `memory.visitorDigestLimit`：主人私聊时附上最近活跃的几位访客（其他私聊、群聊、网站）各自最后 4 句对话，让你可以问 Alice“最近谁来过”，默认 5 位，`0` 关闭；只看 `memory.visitorDigestDays`（默认 3）天内活跃过的。附了这些内容的回合，Alice 记下的事实都按私密处理。
 - `memory.publicDigestEnabled`：默认 `false`。开启后，后台会只用公开条目和公开事实另外生成一份场景摘要、剧情弧、continuity 和氛围描述，给非主人聊天使用（关闭时这些聊天看不到这几项）。每次生成是一次额外的压缩模型调用。可用 `/interlude.context.public` 检查生成结果。
 - `memory.publicDigestEntryThreshold`：公开版每积累多少条新的公开条目刷新一次，默认 20；第一次只要 3 条。
 - `memory.consolidateEnabled`：默认 `false`。开启后每天在故事时区的 `memory.consolidateAt`（默认 `04:00`）之后整理一次记忆：合并近似重复的长期事实；让被更新事实推翻的旧事实失效（一次压缩模型调用）；把超过 `memory.visitorTtlDays`（默认 30 天，`0` 为永不过期）的访客记录替换为占位符。访客包括主人以外的所有 Telegram 私聊和群聊。过期删除无法恢复，开启前请确认保留天数。Mac 在设定时间休眠时，醒来后的下一次后台检查会补做。

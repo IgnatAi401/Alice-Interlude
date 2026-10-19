@@ -161,6 +161,8 @@ telegram:
 #   consolidateEnabled: false       # 每晚整理记忆
 #   consolidateAt: "04:00"
 #   visitorTtlDays: 30              # 访客记录保留天数，0 为永不过期
+#   visitorDigestLimit: 5           # 主人私聊时附上最近几位访客的对话摘录，0 为关闭
+#   visitorDigestDays: 3            # 只摘录这么多天内活跃过的访客
 
 # ---- 多人共享故事 ----
 # sharedStory:
