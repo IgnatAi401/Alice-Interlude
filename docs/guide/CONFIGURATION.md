@@ -88,7 +88,7 @@
 
 ## 工具（仅主人私聊）
 
-`tools.enabled` 默认 `false`。开启后，只有主人私聊的消息回合（以及命令结果回来的那一轮）能使用工具，其他私聊、群聊和后台推进都没有工具。
+工具默认关闭。开关不在配置文件里：在主人私聊发送 `/tools on` 开启、`/tools off` 关闭，状态存在数据库中，重启后保持（旧的 `tools.enabled` 已移除，写了会报错提示删除）。开启后，只有主人私聊的消息回合（以及命令结果回来的那一轮）能使用工具，其他私聊、群聊和后台推进都没有工具。
 
 - `recall`：在全部记忆里全文检索更早的细节，最多返回 `tools.recall.maxResults` 条（默认 8）。
 - `read_skill`：读取 `tools.skills.dir`（默认 `~/AliceWorkspace/skills`）下 `<名字>/SKILL.md` 的全文。每个 `SKILL.md` 开头写 `name:` 和 `description:`（`---` 包围），索引会放进提示词。
@@ -96,5 +96,62 @@
 - `tools.maxSteps`：一轮里最多几次工具往返，默认 6。
 
 命令确实会在你的电脑上运行，点【执行】前请看清命令全文；含 `sudo` 的命令会有醒目提示。
+
+## 网站接口（public）
+
+网站接口默认关闭，关闭时不开任何端口。开关同样不在配置文件里：主人私聊发送 `/web on` 立即开启，`/web off` 立即关闭并释放端口，状态重启后保持（旧的 `web.enabled` 已移除）。下面的 `web` 配置段只管端口、路径和限流。开启后 Alice 在 `127.0.0.1:<web.port>` 提供一个通用 HTTP 接口，外网经 Cloudflare Tunnel 以 `https://api.ignat.ai/alice/api/...` 访问（见 [部署说明](DEPLOYMENT.md#5-网站接口与-cloudflare-tunnel)）。**通过这个接口来的所有对话都是 public 等级**：没有工具，只能看到公开记忆和该访客自己的记录。不需要额外的密钥或环境变量。
+
+```json
+{
+  "web": {
+    "enabled": true,
+    "port": 8787,
+    "basePath": "/alice",
+    "serveRootPage": true,
+    "siteUrl": "https://alice.ignat.ai",
+    "perVisitorPerMinute": 6,
+    "perVisitorPerHour": 60,
+    "perIpPerMinute": 6,
+    "perIpPerHour": 60,
+    "maxStreamsPerVisitor": 3,
+    "guestIdleMinutes": 60
+  }
+}
+```
+
+- `basePath`：Alice 在 `api.ignat.ai` 上占用的一级路径，其他路径留给以后的服务。
+- `serveRootPage`：`api.ignat.ai/` 根路径暂时由 Alice 显示总览页；以后由别的服务接管时改为 `false`（同时改 Tunnel 配置）。
+- `siteUrl`：说明页上“去聊天”的链接，留空则不显示。
+- 限流：每个访客每分钟、每小时的消息数，每个 IP 每分钟、每小时的请求数（消息与申请身份码合计，默认与单个访客相同：6 条/分钟、60 条/小时），超出返回 429。另有固定的输错限制：同一 IP 每小时最多输错 20 次、同一个码每小时最多被输错 10 次，超过后返回 429（正确的密码也要等）。
+- `guestIdleMinutes`：访客码闲置多少分钟后作废，默认 60。
+- 同时开启 `memory.consolidateEnabled`，访客记录（含作废访客码留下的记录）、网页聊天记录和闲置的身份号才会按 `memory.visitorTtlDays`（默认 30 天）删除，与说明页告知一致。
+- 每日轮数上限：所有非主人回合（网站访客、其他私聊、群聊发言）每天共用一个上限，默认 200，按故事时区零点重置；主人不受限。上限不在配置文件里，用 `/quota 300` 随时修改。用完后网站返回 429，响应体带 `code: "daily_limit"`、一句角色化的 `reply` 和 `Retry-After`（秒，到次日零点）。
+
+### 怎么调用
+
+先用 `POST /api/visitor` 申请身份码，再带着它发消息；不带身份码的请求一律返回 401。两种身份：
+
+- **正式身份**：身份码 `v_` + 8 位（如 `v_K7M2Q9XP`）和 8 位密码（如 `4HNW8T3R`），调用方自己保存，以后可手输找回对话。只用大写字母和数字、去掉了易混的 `0 O 1 I L`，输入不分大小写。
+- **访客模式**：申请时带 `"guest": true`，只发访客码 `g_` + 22 位，不要密码。闲置超过 `guestIdleMinutes`（默认 1 小时）就作废，之后用它会返回 401 `Guest code expired`；它留下的聊天和记忆不再对应任何码，仍保存在服务器上（只有主人能看到），按 `visitorTtlDays` 删除。
+
+```sh
+# 申请正式身份：返回 visitorId 和 visitorKey（密码只返回这一次）
+curl -X POST https://api.ignat.ai/alice/api/visitor -H 'Content-Type: application/json' -d '{}'
+# 或访客模式：只返回 visitorId（g_ 码），之后只带它就行
+curl -X POST https://api.ignat.ai/alice/api/visitor -H 'Content-Type: application/json' -d '{"guest":true}'
+# 发消息：带上身份码（和密码）
+curl -X POST https://api.ignat.ai/alice/api/message -H 'Content-Type: application/json' -d '{"visitorId":"v_…","visitorKey":"…","text":"在吗"}'
+# 读历史（Alice 的回复是异步的，稍等再读）
+curl 'https://api.ignat.ai/alice/api/history?visitorId=v_…' -H 'X-Visitor-Key: …'
+```
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `POST` | `/api/visitor` | `{ guest? }` → `201 { visitorId, visitorKey? }`。`guest: true` 为访客模式（无密码）；计入按 IP 的限流。申请后超过 24 小时没有任何请求、也从没发过消息的身份会被自动清理 |
+| `POST` | `/api/message` | `{ text, visitorId, visitorKey?, nickname?, clientId? }` → `202 { id, visitorId }`。`text` 1–2000 字；`clientId` 用于网络重试去重 |
+| `GET` | `/api/history?visitorId=…` | 密码放请求头 `X-Visitor-Key`（访客码不需要） → `{ visitorId, messages: [{ id, role: 'visitor'|'alice', text, at }] }`（最近 200 条） |
+| `GET` | `/api/events?visitorId=…&visitorKey=…` | SSE 推送 `typing {active}` 与 `message`；浏览器 EventSource 不能带请求头，所以密码放查询参数 |
+
+没带身份码、身份码或密码不对、访客码已作废都返回 401。任何网站、脚本都能调用（`Access-Control-Allow-Origin: *`）。
 
 这些参数的完整字段定义位于 `src/config.ts`；通常保留默认值即可。

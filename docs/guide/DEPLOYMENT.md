@@ -55,3 +55,44 @@ pnpm start
 只运行一个使用该 token 的接收进程。程序没有自动安装登录项或后台服务，关机后需要手动启动。
 
 如需群聊，用 [配置指南](CONFIGURATION.md) 的群聊例子，同时填写环境白名单和群配置。可选浏览功能需要 Google Chrome 位于 `/Applications/Google Chrome.app`，不需要时保持关闭。
+
+## 5. 网站接口与 Cloudflare Tunnel
+
+以下步骤在**服务器 Mac**上做。Tunnel 是 Cloudflare 提供的“反向通道”：本机主动连到 Cloudflare，访客访问 `api.ignat.ai` 时由 Cloudflare 转进来，路由器不用开端口。
+
+1. 启动 Alice 后，在主人私聊发送 `/web on`。Bot 回复“已开启网站接口，监听 127.0.0.1:8787/alice”即可；浏览器打开 http://127.0.0.1:8787/alice/ 能看到说明页。这个开关会保存，之后重启自动开启；发送 `/web off` 关闭。
+2. 安装并登录 cloudflared（机器级工具，只需一次）：
+
+   ```sh
+   brew install cloudflared
+   cloudflared tunnel login
+   cloudflared tunnel create ignat-api
+   cloudflared tunnel route dns ignat-api api.ignat.ai
+   ```
+
+   `create` 会打印 tunnel 的 ID，并在 `~/.cloudflared/` 生成 `<ID>.json` 凭据文件（不要外传）。
+
+3. 新建 `~/.cloudflared/config.yml`（`<ID>` 和用户名换成自己的）：
+
+   ```yaml
+   tunnel: <ID>
+   credentials-file: /Users/<用户名>/.cloudflared/<ID>.json
+   ingress:
+     - hostname: api.ignat.ai
+       path: ^/alice(/|$)
+       service: http://127.0.0.1:8787
+     - hostname: api.ignat.ai
+       path: ^/$
+       service: http://127.0.0.1:8787   # 根说明页，以后可改指向别的服务
+     # 以后新增服务：在这里按一级路径加规则，例如 path: ^/other(/|$)
+     - service: http_status:404
+   ```
+
+4. 运行 `cloudflared tunnel run ignat-api`，然后检查：
+   - `https://api.ignat.ai/` 和 `https://api.ignat.ai/alice/` 显示说明页；
+   - `https://api.ignat.ai/xxx` 返回 404；
+   - `curl -i 'https://api.ignat.ai/alice/api/history?visitorId=v_0000000000000000'` 返回 401（身份号不存在）。
+5. 建议在 Cloudflare 控制台 → 安全性 → WAF → 速率限制规则，给以 `/alice/api/` 开头的路径加一条限流（免费版可建 1 条）。
+
+开机自启（LaunchAgent）属于阶段 6，目前需要手动启动 cloudflared 与 Alice。
+

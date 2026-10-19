@@ -20,11 +20,32 @@ export interface Config {
   agency?: AgencyConfig
   /** Native tool use (roadmap §3); off by default. */
   tools?: ToolsConfig
+  /** Public HTTP API for the website (roadmap §5); off by default. */
+  web?: WebConfig
 }
 
+/** On/off is not here: the owner flips it with /web (switches.ts). */
+export interface WebConfig {
+  /** Always bound to 127.0.0.1; only the Cloudflare Tunnel reaches it. */
+  port: number
+  /** First path segment owned by Alice on the shared api host, e.g. '/alice'. */
+  basePath: string
+  /** Also answer '/' with the host overview page until another service owns it. */
+  serveRootPage: boolean
+  /** Chat page linked from the info page; empty hides the link. */
+  siteUrl: string
+  perVisitorPerMinute: number
+  perVisitorPerHour: number
+  perIpPerMinute: number
+  perIpPerHour: number
+  /** Simultaneous SSE connections per visitor; the oldest is closed beyond this. */
+  maxStreamsPerVisitor: number
+  /** A guest code (no key) stops working after this many idle minutes. */
+  guestIdleMinutes: number
+}
+
+/** On/off is not here: the owner flips it with /tools (switches.ts). */
 export interface ToolsConfig {
-  /** Master switch for tool use in owner private-chat turns. */
-  enabled: boolean
   /** Model requests per turn before the loop forces a final answer. */
   maxSteps: number
   recall: { maxResults: number }
@@ -333,9 +354,11 @@ export const DEFAULT_CONFIG: Config = {
     maxConcurrentPages: 1, maxResearchPerSweep: 1, navigationTimeout: 20_000, waitUntil: 'domcontentloaded',
     maxTextCharacters: 20_000, maxExcerptCharacters: 4000, maxObservationsInPrompt: 3, cacheMinutes: 60,
     allowGroupTriggeredResearch: false, logObservationPreview: false },
-  tools: { enabled: false, maxSteps: 6, recall: { maxResults: 8 },
+  tools: { maxSteps: 6, recall: { maxResults: 8 },
     skills: { dir: '~/AliceWorkspace/skills', maxChars: 20_000 },
     exec: { workdir: '~/AliceWorkspace', timeoutSeconds: 60, maxOutputChars: 8_000, approvalTtlMinutes: 10, maxPending: 3 } },
+  web: { port: 8787, basePath: '/alice', serveRootPage: true, siteUrl: 'https://alice.ignat.ai',
+    perVisitorPerMinute: 6, perVisitorPerHour: 60, perIpPerMinute: 6, perIpPerHour: 60, maxStreamsPerVisitor: 3, guestIdleMinutes: 60 },
   logging: { level: 'info', verbosity: 'standard', format: 'layered', colors: true, colorTheme: 'dark', kaomoji: true,
     logScriptPreview: false, logMessageContent: false, dumpRequests: false, previewLength: 500 },
 }
@@ -396,6 +419,12 @@ export function resolveConfig(input: unknown, env: NodeJS.ProcessEnv = {}): Conf
   if (shared && typeof shared === 'object' && Object.hasOwn(shared, 'managerAccounts')) {
     throw new Error('sharedStory.managerAccounts 已移除：管理命令只允许 ALICE_OWNER_CHAT_ID 对应的私聊，请删除该项。')
   }
+  for (const [section, command] of [['tools', '/tools'], ['web', '/web']]) {
+    const value = rest[section] as Record<string, unknown> | undefined
+    if (value && typeof value === 'object' && Object.hasOwn(value, 'enabled')) {
+      throw new Error(`${section}.enabled 已移除：请删除该项，改在主人私聊发送 ${command} on 或 ${command} off（状态保存在数据库中）。`)
+    }
+  }
   const config: Config = mergeDefaults(DEFAULT_CONFIG, rest)
   if (memory !== undefined) {
     config.memory = mergeDefaults({ ...DEFAULT_MEMORY_CONFIG,
@@ -437,6 +466,14 @@ export function resolveConfig(input: unknown, env: NodeJS.ProcessEnv = {}): Conf
   if (tools.maxSteps > 20 || tools.exec.timeoutSeconds > 600 || tools.exec.approvalTtlMinutes > 1440 || tools.exec.maxPending > 10) {
     throw new Error('tools.maxSteps 最大 20，exec.timeoutSeconds 最大 600，exec.approvalTtlMinutes 最大 1440，exec.maxPending 最大 10。')
   }
+  const web = config.web!
+  for (const value of [web.port, web.perVisitorPerMinute, web.perVisitorPerHour, web.perIpPerMinute, web.perIpPerHour, web.maxStreamsPerVisitor, web.guestIdleMinutes]) {
+    if (!Number.isInteger(value) || value < 1) throw new Error('web 中的端口、限流次数和分钟数必须是正整数。')
+  }
+  if (web.port > 65535) throw new Error('web.port 最大 65535。')
+  // One lowercase segment: the tunnel routes ^/<segment>(/|$) here and other services own the rest of the host.
+  if (!/^\/[a-z0-9][a-z0-9-]*$/.test(web.basePath)) throw new Error('web.basePath 必须是单级路径，例如 /alice。')
+  if (web.siteUrl && !/^https?:\/\/[^\s"<>]+$/.test(web.siteUrl)) throw new Error('web.siteUrl 必须是 http(s) 地址或留空。')
   if (config.runtime.conversationFollowUpMinutes?.some(value => typeof value !== 'number' || !Number.isFinite(value) || value <= 0)) throw new Error('conversationFollowUpMinutes 必须是正数数组。')
   config.runtime.restWindows = (config.runtime.restWindows ?? []).map(window => {
     const row = mergeDefaults(DEFAULT_CONFIG.runtime.restWindows![0], window, 'runtime.restWindows')

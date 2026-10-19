@@ -170,7 +170,8 @@ export interface InterludeStory {
 export interface InterludeParticipant {
   id: string
   storyId: string
-  platform: 'telegram'
+  /** 'web' is a website visitor: userId and channelId are its visitorId. */
+  platform: 'telegram' | 'web'
   selfId: string
   userId: string
   channelId: string

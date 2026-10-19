@@ -30,6 +30,9 @@ import { createRecallTool } from './capabilities/recall'
 import { SkillIndex, createReadSkillTool } from './capabilities/skills'
 import { ApprovalStore, createExecTool, hasSudo, runCommand, type ExecApproval } from './capabilities/exec'
 import type { TelegramCallback } from './adapters/telegram-private'
+import type { WebEndpoint } from './adapters/web'
+import { RuntimeSwitches } from './switches'
+import { DailyQuota } from './router/quota'
 import { randomUUID } from 'node:crypto'
 
 interface BufferedUserMessage {
@@ -41,7 +44,8 @@ interface BufferedUserMessage {
 }
 
 /** The routing fields of a Telegram chat; both a live Session and an InboundEvent can supply them. */
-type ChatIdentity = Pick<Session, 'platform' | 'selfId' | 'userId' | 'channelId' | 'guildId' | 'isDirect' | 'username'>
+/** A Telegram chat or a website visitor (platform 'web', channelId = visitorId). */
+type ChatIdentity = Pick<Session, 'selfId' | 'userId' | 'channelId' | 'guildId' | 'isDirect' | 'username'> & { platform: InterludeParticipant['platform'] }
 
 /** A per-relationship input buffer. Messages are durable immediately, while
  * the narrator waits briefly for the user to finish a short burst. */
@@ -132,6 +136,11 @@ export class InterludeService {
   /** SQLite has one writable connection; serialize writes globally. */
   private databaseWriteQueue: Promise<unknown> = Promise.resolve()
   private readonly web: WebObserver
+  /** Website delivery (adapters/web.ts); attached at startup even while /web is off, so replies still reach the transcript. */
+  private webTransport?: WebEndpoint
+  /** /tools and /web, persisted in runtime_meta. */
+  readonly switches: RuntimeSwitches
+  readonly quota: DailyQuota
   /** The only read path for memory tables; every read names its viewer. */
   private readonly store: MemoryStore
   /** Every tool; which ones a turn sees is decided by its tier (router/tiers.ts). */
@@ -152,6 +161,8 @@ export class InterludeService {
   constructor(public ctx: Runtime, public config: Config,
     private readonly telegramEnvironment: TelegramEnvironment = readTelegramEnvironment()) {
     this.serviceLogger = ctx.logger('hds-interlude')
+    this.switches = new RuntimeSwitches(ctx.database)
+    this.quota = new DailyQuota(ctx.database, () => this.config.storyDefaults.timezone)
     this.store = new MemoryStore({
       get: (table, query, options) => this.dbGet(table, query, options),
       ftsSearch: (index, match, limit) => this.dbRead(async () => this.ctx.database.ftsSearch(index, match, limit)),
@@ -221,8 +232,25 @@ export class InterludeService {
   }
 
   canHandleSession(session: ChatIdentity): boolean {
+    if (session.platform === 'web') return !!this.webTransport && session.isDirect && session.selfId === this.telegramEnvironment.botId
     return session.isDirect && isAllowedTelegramSession(this.telegramEnvironment, session)
   }
+
+  /** Enables website visitors; until then web events and web participants are rejected. */
+  attachWeb(transport: WebEndpoint) { this.webTransport = transport }
+
+  get webRunning() { return !!this.webTransport?.running }
+
+  /** /web on|off: the port opens or closes now, and the choice is kept for the next start. */
+  async setWebEnabled(on: boolean) {
+    const web = this.webTransport
+    if (!web) throw new Error('网站接口未装载。')
+    if (on && !web.running) await web.start()
+    if (!on) await web.stop()
+    this.switches.set('web', on)
+  }
+
+  get toolsEnabled() { return this.switches.get('tools') }
 
   /** Group access uses an explicit group allowlist; group members do not need
    * to be present in the private-message user whitelist. */
@@ -239,8 +267,18 @@ export class InterludeService {
 
   /** Same account gate for direct-message work that already has a participant. */
   canHandleParticipant(participant: InterludeParticipant): boolean {
+    if (participant.platform === 'web') return !!this.webTransport && participant.selfId === this.telegramEnvironment.botId
     return participant.platform === 'telegram' && participant.selfId === this.telegramEnvironment.botId
       && this.telegramEnvironment.chatIds.has(participant.channelId)
+  }
+
+  /**
+   * Who a turn may message besides the current participant. Website visitors
+   * never receive proactive or cross-account messages (roadmap §5.5); they
+   * only get replies to their own turns.
+   */
+  private canContactParticipant(participant: InterludeParticipant) {
+    return participant.platform === 'telegram' && this.canHandleParticipant(participant)
   }
 
   /** Management commands are owner-only (roadmap S12); the tier rule lives in router/tiers.ts. */
@@ -260,8 +298,7 @@ export class InterludeService {
    * visitor. A model never decides this.
    */
   private sourceAudience(participant?: InterludeParticipant | null): Audience {
-    // participantKey matches telegramPrivateEvent: 'tg:<userId>'.
-    return !participant || this.isOwnerParticipant(participant) ? 'private' : visitorAudience(`tg:${participant.userId}`)
+    return !participant || this.isOwnerParticipant(participant) ? 'private' : visitorAudience(participantKeyOf(participant))
   }
 
   /**
@@ -272,7 +309,7 @@ export class InterludeService {
   private turnViewer(participant: InterludeParticipant | null, groupContext?: GroupContext): Viewer {
     if (groupContext) return { tier: 'public', participantKey: groupParticipantKey(groupContext.groupId) }
     if (!participant || this.isOwnerParticipant(participant)) return OWNER_VIEWER
-    return { tier: 'public', participantKey: `tg:${participant.userId}` }
+    return { tier: 'public', participantKey: participantKeyOf(participant) }
   }
 
   private async sourceAudienceForId(participantId: string) {
@@ -328,6 +365,8 @@ export class InterludeService {
 
   async createStory(session: ChatIdentity, name?: string) {
     if (!this.canHandleSession(session) && !this.canHandleGroupSession(session)) throw new Error('This session is not allowed to use HDS Interlude.')
+    // The single story is anchored to the Telegram bot; a website visitor can join it but never start it.
+    if (session.platform !== 'telegram') throw new Error('Only Telegram can start the story.')
     const existing = await this.findStory(session)
     if (existing) {
       if (session.isDirect) await this.ensureParticipant(existing, session)
@@ -397,6 +436,7 @@ export class InterludeService {
    * in to avoid a second database read.
    */
   async ensureParticipant(story: InterludeStory, session: ChatIdentity, now = new Date(), knownExisting?: InterludeParticipant) {
+    if (session.platform === 'web') return this.ensureWebParticipant(story, session, now, knownExisting)
     const account = this.userAccountRule(session.userId)
     const existing = knownExisting ?? await this.findParticipant(session, story)
     if (existing) {
@@ -424,7 +464,7 @@ export class InterludeService {
         updatedAt: changed ? now : existing.updatedAt,
       }
     }
-    const id = participantIdFor(session.selfId, session.userId)
+    const id = participantIdFor(session.platform, session.selfId, session.userId)
     const participant: InterludeParticipant = {
       id, storyId: story.id, platform: session.platform, selfId: session.selfId,
       userId: session.userId, channelId: session.channelId,
@@ -447,6 +487,40 @@ export class InterludeService {
     await this.appendEntry(story.id, {
       kind: 'participant-joined', actor: 'system',
       content: `${participant.displayName} entered the character's relationship network.`,
+      occurredAt: now.toISOString(), metadata: { personId: participant.personId },
+    }, now, participant.id, this.sourceAudience(participant))
+    return participant
+  }
+
+  /**
+   * A website visitor: the nickname is self-chosen display text only, and the
+   * owner's configured profile/relationship are never inherited (2026-10-13).
+   */
+  private async ensureWebParticipant(story: InterludeStory, session: ChatIdentity, now: Date, knownExisting?: InterludeParticipant) {
+    const existing = knownExisting ?? await this.findParticipant(session, story)
+    // The nickname is optional per message; omitting it keeps the last one.
+    const displayName = session.username.trim() || existing?.displayName || WEB_VISITOR_NAME
+    if (existing) {
+      if (existing.displayName === displayName && existing.storyId === story.id) return existing
+      await this.dbSet('interlude_participant', { id: existing.id }, { storyId: story.id, displayName, updatedAt: now })
+      return { ...existing, storyId: story.id, displayName, updatedAt: now }
+    }
+    const participant: InterludeParticipant = {
+      id: participantIdFor('web', session.selfId, session.userId), storyId: story.id, platform: 'web', selfId: session.selfId,
+      userId: session.userId, channelId: session.channelId, personId: `web:${session.userId}`, displayName,
+      profile: WEB_VISITOR_PROFILE, relationship: '',
+      state: emptyParticipantState(), status: 'active', createdAt: now, updatedAt: now,
+    }
+    try {
+      await this.dbCreate('interlude_participant', participant)
+    } catch (error) {
+      const raced = await this.findParticipant(session, story)
+      if (!raced) throw error
+      return raced
+    }
+    await this.appendEntry(story.id, {
+      kind: 'participant-joined', actor: 'system',
+      content: `${participant.displayName} started chatting through the website.`,
       occurredAt: now.toISOString(), metadata: { personId: participant.personId },
     }, now, participant.id, this.sourceAudience(participant))
     return participant
@@ -584,7 +658,7 @@ export class InterludeService {
     const participants = await this.participants(storyId, true)
     return [...visitors.values()].map(visitor => ({
       ...visitor,
-      displayName: participants.find(participant => visitor.key === `tg:${participant.userId}`)?.displayName,
+      displayName: participants.find(participant => visitor.key === participantKeyOf(participant))?.displayName,
     }))
   }
 
@@ -847,18 +921,17 @@ export class InterludeService {
 
   async receive(event: InboundEvent) {
     if (this.databaseResetting) return false
-    // Only Telegram private chats are wired into the core so far; other
-    // channels are rejected here until their audience isolation exists.
-    if (event.channel !== 'telegram-private') return false
+    // Telegram private chats and website visitors share this path; groups use receiveGroup.
+    if (event.channel !== 'telegram-private' && event.channel !== 'web') return false
     const session: ChatIdentity = {
-      platform: 'telegram', selfId: this.telegramEnvironment.botId, userId: event.senderId,
+      platform: event.channel === 'web' ? 'web' : 'telegram', selfId: this.telegramEnvironment.botId, userId: event.senderId,
       channelId: event.sourceId, isDirect: true, username: event.senderName,
     }
     // Check before find/create so an unauthorized chat can neither trigger the
     // model nor create a persistent story by merely sending a private message.
     if (!this.canHandleSession(session)) return false
     let story = await this.findStory(session)
-    if (!story && this.config.runtime.autoCreate) story = await this.createStory(session)
+    if (!story && session.platform === 'telegram' && this.config.runtime.autoCreate) story = await this.createStory(session)
     if (!story || story.status !== 'active') {
       this.reportStandaloneOperation('diagnostic', 'debug', '私聊未处理：故事不存在或已暂停 平台=%s 机器人ID=%s 用户ID=%s', session.platform, session.selfId, session.userId)
       return false
@@ -869,7 +942,7 @@ export class InterludeService {
       // story. Refresh the current branch before composing its model context.
       // ensureParticipant performs no write when nothing actually changed.
       participant = await this.ensureParticipant(story, session, new Date(), participant)
-    } else if (this.config.runtime.autoCreate || this.sharedStoryConfig.autoEnrollParticipants) {
+    } else if (session.platform === 'web' || this.config.runtime.autoCreate || this.sharedStoryConfig.autoEnrollParticipants) {
       participant = await this.ensureParticipant(story, session)
     }
     if (!participant || participant.status !== 'active') {
@@ -987,6 +1060,12 @@ export class InterludeService {
     }
     if (await this.groupCooldownActive(story.id, turn.groupId, turn.rule.cooldownSeconds)) {
       this.reportOperation('diagnostic', 'debug', story, 'user-message', '群聊仍在冷却期，跳过群发言 群=%s', turn.groupId)
+      if (!turn.messages.length && !turn.timer) this.bufferedGroupTurns.delete(key)
+      return
+    }
+    // Group turns are public; they count against the daily quota only when Alice would actually speak.
+    if (!this.quota.take()) {
+      this.reportOperation('standard', 'info', story, 'user-message', '今日非主人轮数已用完，跳过群发言 群=%s', turn.groupId)
       if (!turn.messages.length && !turn.timer) this.bufferedGroupTurns.delete(key)
       return
     }
@@ -1495,7 +1574,9 @@ export class InterludeService {
     const hasNarrativeDue = due.length > 0
     if (elapsed > 0 && !hasNarrativeDue && (force || (automaticDue && !pausedForConversation))) {
       const followUpParticipantId = dueFollowUps.length ? story.state.automation?.conversationFollowUpParticipantId : ''
-      const followUpParticipant = followUpParticipantId ? await this.getParticipant(followUpParticipantId) : undefined
+      const candidate = followUpParticipantId ? await this.getParticipant(followUpParticipantId) : undefined
+      // Website visitors get no unprompted messages (roadmap §5.5); their lull becomes an ordinary advance.
+      const followUpParticipant = candidate && this.canContactParticipant(candidate) ? candidate : undefined
       const phase: NarrativeRequest['phase'] = followUpParticipant?.status === 'active'
         ? 'conversation-follow-up'
         : 'advance'
@@ -1617,7 +1698,7 @@ export class InterludeService {
     // rows are context only and are never reinterpreted as a fresh message.
     const promptEntries = turnEntries.filter(entry => !!entry.content.trim())
     const participants = allParticipants
-      .filter(item => item.id !== participant?.id && this.canHandleParticipant(item))
+      .filter(item => item.id !== participant?.id && this.canContactParticipant(item))
       .sort((left, right) => participantRelevance(right) - participantRelevance(left))
       .slice(0, this.sharedStoryConfig.participantContextLimit)
     const agencyEnabled = this.agencyConfig.enabled
@@ -1662,7 +1743,9 @@ export class InterludeService {
     }
     // The context builders are the last step before the model: owner turns
     // wrap visitor records, public turns keep only allowlisted fields.
-    const account = participant ? this.userAccountRule(participant.userId) : undefined
+    // A website visitor gets the fixed host description, never a Telegram account profile.
+    const account = participant?.platform === 'web' ? { profile: WEB_VISITOR_PROFILE, relationship: '' }
+      : participant ? this.userAccountRule(participant.userId) : undefined
     return this.narrator.decide(viewer.tier === 'owner'
       ? ownerNarrativeRequest(draft)
       : publicNarrativeRequest(draft, {
@@ -1679,11 +1762,11 @@ export class InterludeService {
   private async turnTools(story: InterludeStory, participant: InterludeParticipant | null, phase: NarrativeRequest['phase'], dueIntents: NarrativeIntent[], groupContext?: GroupContext) {
     // A command result arrives as a due intent; that turn may react with another request.
     const live = phase === 'user-message' || phase === 'intent-due' && dueIntents.some(intent => intent.type === 'tool-result')
-    if (!this.toolsConfig.enabled || !live || !participant || groupContext) return undefined
+    if (!this.toolsEnabled || !live || !participant || groupContext) return undefined
     const viewer = this.turnViewer(participant)
     if (viewer.tier !== 'owner') return undefined
     const session = new TurnToolSession(this.tools, {
-      tier: viewer.tier, participantKey: `tg:${participant.userId}`, participantId: participant.id, storyId: story.id, turnId: randomUUID(),
+      tier: viewer.tier, participantKey: participantKeyOf(participant), participantId: participant.id, storyId: story.id, turnId: randomUUID(),
     }, {
       maxSteps: this.toolsConfig.maxSteps,
       log: (message, ...args) => this.reportOperation('standard', 'info', story, phase, message, ...args),
@@ -1788,7 +1871,7 @@ export class InterludeService {
     const id = Number(match[2])
     const existing = await this.approvals.get(id)
     if (!existing || existing.chatId !== callback.chatId || existing.messageId !== callback.messageId) return callback.answer('找不到这条审批。')
-    if (match[1] === 'approve' && !this.toolsConfig.enabled) return callback.answer('工具已在配置中关闭，不能执行。')
+    if (match[1] === 'approve' && !this.toolsEnabled) return callback.answer('工具已用 /tools off 关闭，不能执行。')
     const { row, changed } = await this.approvals.decide(id, match[1] === 'approve', new Date())
     if (!changed) {
       if (row?.status === 'expired' && existing.status === 'pending') {
@@ -1943,7 +2026,7 @@ export class InterludeService {
     // under someone else, no edits to global or foreign consequences.
     const permittedParticipantIds = new Set(publicTurn
       ? participant && this.canHandleParticipant(participant) ? [participant.id] : []
-      : allParticipants.filter(item => this.canHandleParticipant(item)).map(item => item.id))
+      : allParticipants.filter(item => this.canContactParticipant(item)).map(item => item.id))
     // Continuity is a private derived layer: a public turn never saw it and must not overwrite it.
     const refreshContinuity = turnSource === 'private' && this.shouldRefreshContinuity(story, phase)
     const decision = normalizeDecision(
@@ -2899,6 +2982,13 @@ export class InterludeService {
         if (this.config.logging?.logMessageContent) {
           this.report('info', story, 'intent-due', '主角消息内容：%s', message.content.slice(0, this.config.logging.previewLength))
         }
+        if (target.platform === 'web') {
+          // Stored in the visitor's transcript first, so an offline visitor gets it from /api/history.
+          await this.webTransport!.send(target.userId, message.content)
+          delivered.push(message)
+          if (message.automaticDelivery) await this.recordAutomaticDelivery(story.id, target.id, message.automaticDelivery, new Date())
+          continue
+        }
         if (reply && current?.id === target.id) {
           await reply.send(message.content)
           delivered.push(message)
@@ -3378,6 +3468,10 @@ export class InterludeService {
       if (ids.length) await this.dbSet(table, { id: { $in: ids } }, { ...placeholder, ...(table === 'interlude_script_entry' ? {} : { updatedAt: now }) })
       expired += ids.length
     }
+    // The website transcript is a transport copy (like Telegram's own history); it expires with the visitor records.
+    expired += await this.dbWrite(async () => (await this.ctx.database.remove('interlude_web_message', { createdAt: { $lte: cutoff } })).removed)
+    // A visitor idle past the TTL loses its id/key; its records above are already gone.
+    await this.dbWrite(() => this.ctx.database.remove('interlude_web_visitor', { lastSeenAt: { $lte: cutoff } }))
     return expired
   }
 
@@ -4049,11 +4143,19 @@ export class InterludeService {
 
 function storyIdForCharacter(selfId: string) { return `character:telegram:${selfId}` }
 
-function participantIdFor(selfId: string, userId: string) { return `telegram:${selfId}:${userId}` }
+function participantIdFor(platform: InterludeParticipant['platform'], selfId: string, userId: string) { return `${platform}:${selfId}:${userId}` }
+
+/** Matches InboundEvent.participantKey: 'tg:<userId>' or 'web:<visitorId>'. */
+export function participantKeyOf(participant: Pick<InterludeParticipant, 'platform' | 'userId'>) {
+  return `${participant.platform === 'web' ? 'web' : 'tg'}:${participant.userId}`
+}
+
+const WEB_VISITOR_NAME = 'Website visitor'
+const WEB_VISITOR_PROFILE = 'A visitor chatting with the character through her public website. Not someone she knows personally.'
 
 function sameParticipantEndpoint(participant: InterludeParticipant, session: ChatIdentity) {
-  return participant.platform === 'telegram' && session.platform === 'telegram'
-    && participant.selfId === session.selfId && participant.channelId === telegramChatId(session)
+  if (participant.platform !== session.platform || participant.selfId !== session.selfId) return false
+  return participant.channelId === (session.platform === 'web' ? session.channelId : telegramChatId(session))
 }
 
 function extractEventImageSources(event: Pick<InboundEvent, 'imageSources'>) {

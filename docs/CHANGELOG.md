@@ -2,6 +2,11 @@
 
 ## 未发布
 
+- 网站接口身份码改为单独申请：新增 `POST /api/visitor`（`guest: true` 为访客模式），`POST /api/message` 不再分配身份、不再接受 `guest`，不带身份码返回 401。申请后 24 小时无请求且从没发过消息的身份每小时自动清理。
+- 网站接口按 IP 的限流新增每分钟一档：新配置项 `web.perIpPerMinute`（默认 6），`web.perIpPerHour` 默认从 200 改为 60。
+- 新增每日非主人轮数上限：网站访客消息、其他私聊消息和群聊发言共用，默认每天 200 轮，主人不受限。主人私聊 `/quota` 查看用量，`/quota 300` 修改（已加入菜单，重启后保持）。用完后网站返回 429 和一句角色化回复，其他私聊每天提醒一次，群聊不再发言。
+- 工具和网站接口改为用命令开关：主人私聊发送 `/tools on|off`、`/web on|off`（已加入 Telegram 菜单），状态存在数据库、重启后保持，`/web` 立即开关端口无需重启。`config.json` 中的 `tools.enabled`、`web.enabled` 已移除，写了会报错提示删除。`/status`、`/start` 显示两个开关的状态。
+- 新增网站接口（默认关闭，`/web on` 开启）：在 `127.0.0.1:8787/alice` 提供通用 HTTP 接口 `POST /api/message`、`GET /api/history`、`GET /api/events`（SSE），经 Cloudflare Tunnel 对外为 `api.ignat.ai/alice/api/...`；接口来的对话一律是 public 等级。访客用服务器分配的身份码 `visitorId`（`v_` + 8 位）+ 密码 `visitorKey`（8 位，不分大小写，便于手输找回）区分；也可用访客模式（`guest: true`）只拿一个 `g_` 码，闲置 `web.guestIdleMinutes`（默认 60）分钟后作废。不需要额外密钥。`api.ignat.ai/` 与 `/alice/` 显示静态说明页，其他路径 404。用法见 `docs/guide/CONFIGURATION.md`，部署见 `docs/guide/DEPLOYMENT.md` 第 5 节。
 - 管理命令接入 Telegram 命令菜单：启动时自动注册（只在主人私聊显示），使用短名如 `/status`、`/memory_facts`，旧写法 `/interlude.xxx` 仍有效。新增 `/start` 检测是否在线、`/help [命令名]` 用富文本列出每条命令的用法与例子。
 - 模型服务可更换：新增环境变量 `LLM_BASE_URL`、`LLM_API_KEY`、`LLM_MODEL`、`LLM_COMPACTION_MODEL`、`LLM_ALTER_MODEL`、`LLM_MAX_TOKENS`、`LLM_TIMEOUT_SECONDS`、`LLM_VISION`，可接入 DeepSeek 等兼容 Anthropic Messages 协议的服务，并覆盖 `config.json` 的模型设置；模型名不再限于 `claude-*`。`ANTHROPIC_API_KEY` 仍可用。
 - 运行环境改为 Node.js 24.x（不再支持 22.x）。
@@ -19,7 +24,7 @@
 - 新增公开版派生层（默认关闭，`memory.publicDigestEnabled`）：只用公开条目和公开事实单独生成场景摘要、剧情弧、continuity 与氛围描述，供非主人聊天使用；公开人物变化直接由公开提案合并。主人撤回或删除公开内容时自动清空重建。新增 `/interlude.context.public` 查看访客实际拿到的公开版。
 - 新增每晚记忆整理（默认关闭，`memory.consolidateEnabled`、`consolidateAt`、`visitorTtlDays`）：合并近似重复的事实，让被新事实推翻的旧事实失效，删除超过保留期的访客记录（替换为占位符）。可用 `/interlude.memory.consolidate` 手动执行。
 - 新增调试开关 `logging.dumpRequests`（需 `verbosity=diagnostic`），导出完整模型请求用于隐私检查。
-- 新增主人私聊工具（默认关闭，`tools.enabled`）：`recall` 检索更早的记忆，`read_skill` 读取 `~/AliceWorkspace/skills` 中的说明书，`exec` 请求在 Mac 上执行命令。每条命令都会单独发来带【执行】【拒绝】按钮的消息，10 分钟内有效；执行结果会交回 Alice 回复。其他聊天没有任何工具。
+- 新增主人私聊工具（默认关闭，`/tools on` 开启）：`recall` 检索更早的记忆，`read_skill` 读取 `~/AliceWorkspace/skills` 中的说明书，`exec` 请求在 Mac 上执行命令。每条命令都会单独发来带【执行】【拒绝】按钮的消息，10 分钟内有效；执行结果会交回 Alice 回复。其他聊天没有任何工具。
 - 新增 `/interlude.exec [编号]` 查看命令审批记录和输出。
 - 工具提示词加强：主人要求看网页、查电脑上的东西时必须真的发起工具调用，不能凭人设推托或凭名字猜内容。
 

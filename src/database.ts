@@ -5,7 +5,7 @@ const TABLES: Record<string, boolean> = {
   interlude_script_entry: true, interlude_memory: true, interlude_intent: true,
   interlude_scene: true, interlude_arc: true, interlude_fact: true,
   interlude_state_patch: true, interlude_overlay_snapshot: true, interlude_web_observation: true,
-  interlude_approval: true,
+  interlude_approval: true, interlude_web_message: true, interlude_web_visitor: false,
 }
 
 type Row = Record<string, any>

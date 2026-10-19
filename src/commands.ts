@@ -45,6 +45,7 @@ export function registerCommands(ctx: Runtime, service: InterludeService) {
         `<b>本机时间</b>　${escapeHtml(new Date().toLocaleString('zh-CN', { hour12: false }))}`,
         `<b>故事</b>　${story ? `${escapeHtml(story.setting.character.name)}（${story.status === 'active' ? '运行中' : story.status === 'paused' ? '已暂停' : escapeHtml(story.status)}）` : '尚未创建'}`,
         `<b>模型</b>　<code>${escapeHtml(service.config.model.model)}</code>`,
+        `<b>工具</b>　${service.toolsEnabled ? '开启' : '关闭'}　<b>网站接口</b>　${service.webRunning ? '开启' : '关闭'}`,
         '',
         '<i>发送 /help 查看全部命令。</i>',
       ].join('\n') }
@@ -88,9 +89,49 @@ export function registerCommands(ctx: Runtime, service: InterludeService) {
         `故事状态：${story.status}`,
         `已写到：${story.cursorAt.toISOString()}`,
         `模型：${service.config.model.baseUrl || 'https://api.anthropic.com'} / ${service.config.model.model}（Messages 协议，thinking 关闭）`,
+        `主人私聊工具：${service.toolsEnabled ? '开启' : '关闭'}（/tools）`,
+        `网站接口：${service.webRunning ? '开启' : '关闭'}（/web）`,
+        `今日非主人轮数：${service.quota.status().used} / ${service.quota.limit}（/quota）`,
         `允许主动可见消息：${service.config.runtime.allowProactiveMessages ? '开启' : '关闭'}`,
         `Agency Window：${service.config.agency?.enabled === false ? '关闭' : '开启'}（${story.state.agencyWindow?.activityLoad || '尚未建立'}）`,
       ].join('\n')
+    })
+
+  ctx.command('interlude.tools [state:string]', '查看或切换主人私聊工具（recall、read_skill、exec）；on 开启，off 关闭')
+    .action(async ({ session = missingSession() }, state) => {
+      if (!requireManager(service, session)) return '当前 Telegram 聊天没有管理权限。'
+      const on = parseSwitch(state)
+      if (on === null) return '用法：/tools on 或 /tools off；不带参数查看当前状态。'
+      if (on !== undefined) service.switches.set('tools', on)
+      const enabled = service.toolsEnabled
+      return on === undefined
+        ? `主人私聊工具：${enabled ? '开启' : '关闭'}。`
+        : enabled ? '已开启主人私聊工具。exec 的每条命令仍需你点按钮确认。' : '已关闭主人私聊工具；尚未执行的审批也不能再执行。'
+    })
+
+  ctx.command('interlude.web [state:string]', '查看或切换网站接口（访客 HTTP API）；on 开启，off 关闭')
+    .action(async ({ session = missingSession() }, state) => {
+      if (!requireManager(service, session)) return '当前 Telegram 聊天没有管理权限。'
+      const on = parseSwitch(state)
+      if (on === null) return '用法：/web on 或 /web off；不带参数查看当前状态。'
+      const address = `127.0.0.1:${service.config.web!.port}${service.config.web!.basePath}`
+      if (on === undefined) return `网站接口：${service.webRunning ? `开启（${address}）` : '关闭'}。`
+      try { await service.setWebEnabled(on) } catch (error) {
+        return `网站接口开启失败：${(error as Error).message}（端口 ${service.config.web!.port} 可能被占用）。`
+      }
+      return on ? `已开启网站接口，监听 ${address}。访客对话都是 public 等级。` : '已关闭网站接口，端口已释放；访客的已有记录保留。'
+    })
+
+  ctx.command('interlude.quota [limit:string]', '查看或修改每日非主人轮数上限（网站访客、其他私聊、群聊发言）；主人不受限')
+    .action(async ({ session = missingSession() }, limit) => {
+      if (!requireManager(service, session)) return '当前 Telegram 聊天没有管理权限。'
+      const raw = limit?.trim()
+      if (raw) {
+        if (!/^\d{1,6}$/.test(raw)) return '用法：/quota 300；0 表示今天起暂停所有非主人回合。不带参数查看当前用量。'
+        service.quota.setLimit(Number(raw))
+      }
+      const { used, limit: max } = service.quota.status()
+      return `${raw ? '已修改。' : ''}今日非主人轮数：${used} / ${max}${used >= max ? '（已用完，明天零点重置）' : ''}。`
     })
 
   ctx.command('interlude.pause', '暂停当前故事的自动处理，不删除任何记录')
@@ -468,6 +509,11 @@ const HELP_SECTIONS: Array<{ title: string; commands: Record<string, CommandDoc>
     'interlude.resume': {},
     'interlude.advance': { detail: '立即执行一次后台推进，期间产生的可见消息会发出。' },
   } },
+  { title: '🔌 功能开关', commands: {
+    'interlude.tools': { detail: '状态存在数据库中，重启后保持。默认关闭。', example: '/tools on' },
+    'interlude.web': { detail: '立即开关端口，重启后保持。默认关闭。', example: '/web on' },
+    'interlude.quota': { detail: '每条访客消息、其他私聊消息、每次群聊发言各算一轮，按故事时区每天零点重置。默认 200，修改后立即生效并保持。', example: '/quota 300' },
+  } },
   { title: '🔍 查看', commands: {
     'interlude.timeline': { detail: 'limit 最多 30。', example: '/timeline 20' },
     'interlude.memory': { detail: 'limit 最多 30。', example: '/memory 5' },
@@ -601,6 +647,15 @@ async function changeStatus(service: InterludeService, session: Session, status:
   if (typeof story === 'string') return story
   await service.setStatus(story, status)
   return status === 'active' ? '故事已恢复自动处理。' : '故事已暂停自动处理；已有记录不会删除。'
+}
+
+/** undefined: just show the state; null: not a recognised value. */
+function parseSwitch(text: unknown): boolean | undefined | null {
+  const value = String(text ?? '').trim().toLowerCase()
+  if (!value) return undefined
+  if (['on', 'open', 'true', '1', '开', '开启'].includes(value)) return true
+  if (['off', 'close', 'false', '0', '关', '关闭'].includes(value)) return false
+  return null
 }
 
 function requireManager(service: InterludeService, session: Session) { return service.canManageSession(session) }

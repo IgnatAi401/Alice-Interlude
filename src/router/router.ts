@@ -1,4 +1,5 @@
 import type { AdapterInboundEvent, InboundEvent } from './events'
+import type { DailyQuota } from './quota'
 import { resolveTier } from './tiers'
 
 export interface RouterOptions {
@@ -6,10 +7,15 @@ export interface RouterOptions {
   ownerChatId: string
 }
 
-/**
- * The only place where an event receives its trust tier.
- * 限流与 usage_ledger 预算检查以后也放在这里，在调用模型之前完成。
- */
+/** The only place where an event receives its trust tier. */
 export function routeInbound(event: AdapterInboundEvent, options: RouterOptions): InboundEvent {
   return { ...event, tier: resolveTier(event.channel, event.sourceId, options.ownerChatId) }
+}
+
+/**
+ * Checked after routing and before the core sees the event, so a refused
+ * message never reaches the model. The owner is never limited.
+ */
+export function admitInbound(event: InboundEvent, quota: DailyQuota) {
+  return event.tier === 'owner' || quota.take(event.receivedAt)
 }

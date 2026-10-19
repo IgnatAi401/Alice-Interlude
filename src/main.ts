@@ -7,7 +7,10 @@ import { Runtime } from './runtime'
 import { Storage } from './database'
 import { commandMenu, registerCommands } from './commands'
 import { assertMacOS, readTelegramEnvironment, TelegramBot, telegramPrivateEvent } from './adapters/telegram-private'
-import { routeInbound } from './router/router'
+import { admitInbound, routeInbound } from './router/router'
+import type { AdapterInboundEvent } from './router/events'
+import { QUOTA_REPLY } from './router/quota'
+import { WebServer } from './adapters/web'
 import { runMigrations } from './memory/migrate'
 
 export async function loadConfig(path = resolve('config.json')) {
@@ -33,9 +36,27 @@ export async function start() {
   runtime.bots.push(bot)
   const service = new InterludeService(runtime, config, env)
   if (!config.blindMode?.enabled) registerCommands(runtime, service)
+  // Every private and web message goes through the router: tier first, then the daily quota (owner exempt).
+  const receive = async (adapterEvent: AdapterInboundEvent) => {
+    const event = routeInbound(adapterEvent, { ownerChatId: env.ownerChatId })
+    if (!admitInbound(event, service.quota)) return 'limited' as const
+    const accepted = await service.receive(event)
+    if (!accepted && event.tier !== 'owner') service.quota.refund(event.receivedAt)
+    return accepted
+  }
+  // Always built so /web can open the port at runtime; it listens only while the switch is on.
+  const web = new WebServer(config.web!, storage, {
+    // Every web request is routed like any other event; resolveTier can only return 'public' for it.
+    receive,
+    quotaResetSeconds: () => service.quota.secondsUntilReset(),
+    characterName: config.storyDefaults.characterName,
+    visitorTtlDays: config.memory?.visitorTtlDays ?? 30,
+  })
+  service.attachWeb(web)
   let stopPromise: Promise<void> | undefined
   const stop = () => stopPromise ??= (async () => {
     bot.stop()
+    await web.stop()
     try { await runtime.stop() } finally {
       try { await service.shutdown() } finally { storage.close() }
     }
@@ -51,6 +72,15 @@ export async function start() {
       runtime.puppeteer = { page: () => browser.newPage(), close: () => browser.close() }
     }
     if (runtime.stopped) return
+    if (service.switches.get('web')) {
+      try {
+        await web.start()
+        console.info(`网站接口已在 http://127.0.0.1:${config.web!.port}${config.web!.basePath}/ 监听。`)
+      } catch {
+        // A busy port should not keep Telegram down; the owner can retry with /web on.
+        console.warn(`网站接口启动失败（端口 ${config.web!.port} 可能被占用），继续运行 Telegram。`)
+      }
+    }
     console.info('正在连接 Telegram；按 Ctrl+C 停止。')
     await bot.setOwnerCommands(config.runtime.ignoreCommandMessages ? commandMenu(runtime) : []).catch(() => console.warn('Telegram 命令菜单设置失败，命令仍可手动输入。'))
     await bot.run(async session => {
@@ -66,9 +96,15 @@ export async function start() {
         void runtime.dispatchCommand(session)?.catch(() => console.warn('管理命令执行失败。'))
         return
       }
-      if (session.isDirect) { if (config.runtime.captureDirectMessages) await service.receive(routeInbound(telegramPrivateEvent(session), { ownerChatId: env.ownerChatId })) }
+      if (session.isDirect) {
+        if (!config.runtime.captureDirectMessages) return
+        const event = telegramPrivateEvent(session)
+        // One notice per chat per day; later messages that day are dropped silently.
+        if (await receive(event) === 'limited' && service.quota.firstRefusal(event.participantKey)) await event.reply.send(QUOTA_REPLY).catch(() => undefined)
+      }
       else await service.receiveGroup(session)
-    }, config.tools?.enabled ? callback => service.handleCallback(callback) : undefined)
+    // Always subscribed: /tools can turn on mid-run, and handleCallback refuses approvals while it is off.
+    }, callback => service.handleCallback(callback))
   } finally {
     await stop()
     process.removeListener('SIGINT', signalHandler)

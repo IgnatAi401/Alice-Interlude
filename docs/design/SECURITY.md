@@ -16,7 +16,7 @@ Anthropic 接收当前叙事需要的角色设定、连续性记录和消息；�
 
 管理命令只在 owner 私聊中执行：入口处先拦截（非 owner 不回复），命令内部再检查一次。Telegram 命令菜单用 `chat` 作用域只注册给 owner 私聊；短名（`/status` 等）只对 owner 视为命令，其他聊天仍按普通消息处理。
 
-工具注册表（`src/capabilities/registry.ts`）有两道检查：构造请求时只暴露当前等级允许的工具；执行前按 `TIER_TOOLS` 能力表再次检查等级，未注册或等级不允许的工具返回错误结果且不执行。能力表为 owner：`exec`、`read_skill`、`recall`；public 与 system：无。工具只在主人私聊的消息回合和命令结果回合提供（`tools.enabled`，默认关闭），回合的等级来自事件，不来自模型输出。
+工具注册表（`src/capabilities/registry.ts`）有两道检查：构造请求时只暴露当前等级允许的工具；执行前按 `TIER_TOOLS` 能力表再次检查等级，未注册或等级不允许的工具返回错误结果且不执行。能力表为 owner：`exec`、`read_skill`、`recall`；public 与 system：无。工具只在主人私聊的消息回合和命令结果回合提供（默认关闭，由主人私聊的 `/tools` 命令开关，状态存于 `runtime_meta.switch.tools`；关闭时已发出的审批也不能执行），回合的等级来自事件，不来自模型输出。
 
 不做 `web_fetch`：本机代理使用假 IP 模式（所有域名解析到 `198.18.0.0/15`），程序无法检查真实目标地址。读网页只能经审批的 `exec` 运行 `curl`。
 
@@ -26,11 +26,23 @@ Anthropic 接收当前叙事需要的角色设定、连续性记录和消息；�
 - 命令输出只存在审批表中；结果以 `tool-result` 意图交回时不含输出，组装提示词时才从审批表读入，并包装在 `<command_output>` 内作为数据。剧本里只写一行 private 的 `tool-activity` 摘要。日志只记工具名、耗时、结果长度和退出码，不记输出。
 - 启动时，上次运行留下的未发出请求作废，执行中被打断的命令标为 interrupted 并告知 Alice。
 
+## 网站接口
+
+`src/adapters/web.ts`（默认关闭，由主人私聊的 `/web` 命令开关端口，状态存于 `runtime_meta.switch.web`；与其他管理命令一样仅 owner 可用，S12）只监听 `127.0.0.1`，外网只能经 Cloudflare Tunnel 进入，因此客户端 IP 只信 `CF-Connecting-IP`。网站事件同样经 `routeInbound` 定级；`resolveTier` 对 `web` 渠道只会返回 `public`，即使 visitorId 与主人 chat id 相同（S1）。访客回合没有工具（S2、S3），读者为 `public` + `visitor:web:<visitorId>`（S4、S5）。
+
+- 访客参与者 `platform: 'web'`，资料是宿主写死的“网站访客”说明，不继承 `storyDefaults` 的主人画像；昵称只是显示名，清除控制字符与 `<>`，最多 24 字。
+- 访客不会收到主动消息、跨会话消息或对话后续补写（roadmap 5.5）：这些目标只取 Telegram 参与者。网站投递前检查 `web` 已开启且参与者属于本 Bot（S13）。
+- 身份（2026-10-19 起不做人机验证和 cookie）：第一次发消息时服务器分配身份，调用方不能自定。正式身份是 `v_` + 8 位身份码与 8 位密码（31 个无歧义字符，约 2^39.6 种，不分大小写，便于手输找回），`interlude_web_visitor` 只存密码的 SHA-256，定长比较，身份码不存在与密码错误返回同样的 401。短码靠输错限制兜底：同一 IP 每小时 20 次、同一个码每小时 10 次，超过后连正确密码也返回 429，因此换多少 IP 都无法穷举。访客模式（`guest: true`）只发 `g_` + 22 位 base64url 随机码（128 位，区分大小写），它本身就是凭据，闲置 `guestIdleMinutes`（默认 60）后删除身份行；留下的记录仍为 `visitor:web:g_…`，不再有人能用码访问，只有主人可见，按 `visitorTtlDays` 删除。身份码只用于隔离访客之间的记忆和聊天记录；泄露只会让别人读写那位访客的对话，任何访客都没有超出 public 的权限。SSE 因浏览器限制把密码放在查询参数，可能出现在 Cloudflare 日志中。
+- 跨源：接口不使用 cookie 等浏览器自动携带的凭据，因此 `Access-Control-Allow-Origin: *`，不存在 CSRF；同域名其他服务也拿不到访客的密码。（取代原 S14 的来源限制）
+- 防滥用：请求体 8 KB、消息 2000 字上限；令牌桶限流（`src/router/limits.ts`，每访客每分钟/每小时、每 IP 每分钟/每小时，新建访客也计入 IP 限额）；同一 `clientId` 重试不会触发第二个回合。所有非主人回合另有每日轮数上限（`src/router/quota.ts`，Router 放行前检查，用完后不调用模型，主人不受限），即使换很多 IP 也无法让每天的模型调用超过上限。
+- 说明页（`/` 与 `<basePath>/`）是静态 HTML，只用配置和进程启动时间，不读任何表；带 `default-src 'none'` 的 CSP，无脚本。
+- 网页聊天记录存在 `interlude_web_message`（访客消息与 Alice 发给该访客的消息），只在身份号与密码都正确时读给访客本人，不进入模型上下文，不是记忆表。开启每晚整理时随访客记录一起按 `visitorTtlDays` 删除；闲置超过同样天数的身份号也一并删除。
+
 ## 记忆受众
 
 记忆类记录都带 `audience`：`private`（只有主人回合可见）、`public`（所有回合可见）、`visitor:<key>`（该访客本人和主人可见）。规则只在 `src/memory/audience.ts` 实现，缺失或非法的值一律按 `private` 处理：写库时 `dbCreate` 兜底，读库时 `normalizeDatabaseRow` 再规范化一次。
 
-- 宿主决定：主人私聊的原始条目、系统事件、管理员注记和手动事实为 `private`；其他私聊的原始条目、剧本和事实固定为 `visitor:tg:<id>`，群聊固定为 `visitor:tg-group:<id>`，模型无法改变。
+- 宿主决定：主人私聊的原始条目、系统事件、管理员注记和手动事实为 `private`；其他私聊的原始条目、剧本和事实固定为 `visitor:tg:<id>`，网站访客为 `visitor:web:<visitorId>`，群聊固定为 `visitor:tg-group:<id>`，模型无法改变。
 - 模型分类：主人回合和后台推进产出的记忆（写入时转为事实）、后台推进的剧本、压缩产出的事实和设定变化提案，由模型按隐私分类标准（`src/memory/classify.ts`，位于固定提示词层）标注 `private`/`public`，只有完全等于 `public` 才算公开。
 - 来源优先：压缩结果引用的条目里只要有访客内容，就固定归该访客；混合了两个访客，或访客与私密内容混合，一律为 `private`。同内容但受众不同的事实不合并。
 - 私密版场景摘要、剧情弧和 Overlay 归档由全部内容生成，固定为 `private`。公开版（`memory.publicDigestEnabled`）是另一组 `public` 行，由单独的模型调用生成，其输入由 `context/public.ts` 的 `publicDigestRequest` 逐字段构造：只有 Canon、公开条目、公开事实、公开人物变化、上一版公开摘要和 Alter 方向与强度，不含 `story` 对象、主人画像、`fixedPrompt` 和压缩主提示词，也不含任何访客记录。公开人物变化由代码合并公开的全局 character/perspective/world 提案，relationship 提案不进入。

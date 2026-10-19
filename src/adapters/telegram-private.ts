@@ -36,7 +36,7 @@ export function telegramChatId(session: Pick<Session, 'isDirect' | 'channelId' |
   return String(session.isDirect ? session.channelId : session.guildId || session.channelId).trim()
 }
 
-export function isAllowedTelegramSession(env: TelegramEnvironment, session: Pick<Session, 'platform' | 'selfId' | 'userId' | 'isDirect' | 'channelId' | 'guildId'>) {
+export function isAllowedTelegramSession(env: TelegramEnvironment, session: Pick<Session, 'selfId' | 'userId' | 'isDirect' | 'channelId' | 'guildId'> & { platform: string }) {
   return session.platform === 'telegram'
     && session.selfId === env.botId
     && session.userId !== env.botId
