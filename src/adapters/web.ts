@@ -17,7 +17,8 @@ import type { VisitorNameReviewDecision } from '../types'
  * CF-Connecting-IP cannot be forged by a direct client.
  *
  * 不做人机验证和 cookie（2026-10-19 决定）：先 POST /api/visitor 申请 visitorId（身份号）
- * 和 visitorKey（密码），之后每次请求都带上这一对，不带一律 401。库里只存密码的哈希；身份号只隔离
+ * 和 visitorKey（密码），之后每次请求都带上这一对（密码放请求体或 X-Visitor-Key，只有 EventSource
+ * 无法带头部才放查询串），不带一律 401。库里只存密码的哈希；身份号只隔离
  * 访客之间的记忆，任何访客都只有 public 权限。访客模式（guest）只发 g_ 码、不发密码，
  * 闲置 guestIdleMinutes 后作废，记录仍留在库里按 visitorTtlDays 删除。
  * 申请 v_ 码必须带姓名（g_ 码不能取名，固定叫“访客”+ 码的前 6 位），姓名与码绑定并作为发送者名字交给模型；每次设定或修改
@@ -52,12 +53,15 @@ export interface WebServerDeps {
 interface ChatMessage { id: string; role: 'visitor' | 'alice'; text: string; at: string }
 interface WebMessageRow { id: number; visitorId: string; role: ChatMessage['role']; text: string; clientId?: string; createdAt: string }
 interface Stream { visitorId: string; res: ServerResponse }
-interface VisitorRow {
-  id: string; keyHash: string; guest?: boolean; chatted?: boolean; createdAt: string; lastSeenAt: string
-  name?: string
-  /** Successful renames in renameMonth (YYYY-MM); the first name is not a rename. */
-  renameMonth?: string; renameCount?: number
-}
+type VisitorRow = {
+  id: string; createdAt: string; lastSeenAt: string
+  /** Set by the first accepted message; identities without it are dropped once idle for a day. */
+  chatted?: true
+} & (
+  | { guest: true }
+  /** Successful renames in renameMonth (YYYY-MM). */
+  | { guest?: undefined; keyHash: string; name: string; renameMonth?: string; renameCount?: number }
+)
 
 /** v codes and keys may be typed by hand to recover a chat: short, case-insensitive, no 0/O/1/I/L. */
 const CODE_ALPHABET = '23456789ABCDEFGHJKMNPQRSTUVWXYZ'
@@ -184,8 +188,8 @@ export class WebServer implements WebEndpoint {
       '/visitor': ['POST', () => this.postVisitor(req, res)],
       '/name': ['POST', () => this.postName(req, res)],
       '/message': ['POST', () => this.postMessage(req, res)],
-      '/history': ['GET', async () => this.history(res, await this.authorize(req, query.get('visitorId'), visitorKeyFrom(req, query)))],
-      '/events': ['GET', async () => this.events(req, res, (await this.authorize(req, query.get('visitorId'), visitorKeyFrom(req, query))).id)],
+      '/history': ['GET', async () => this.history(res, await this.authorize(req, query.get('visitorId'), req.headers['x-visitor-key']))],
+      '/events': ['GET', async () => this.events(req, res, (await this.authorize(req, query.get('visitorId'), query.get('visitorKey'))).id)],
     }
     const match = routes[route]
     if (!match) throw new HttpError(404, 'Not found')
@@ -210,7 +214,7 @@ export class WebServer implements WebEndpoint {
       : { visitorId, visitorKey, name, renamesLeft: this.config.renamesPerMonth })
   }
 
-  /** Changes the bound name. The first name of a code issued without one is free; later ones count toward the month. */
+  /** Changes the bound name; every successful change counts toward the month. */
   private async postName(req: IncomingMessage, res: ServerResponse) {
     const body = await readJson(req)
     const name = cleanName(body.name)
@@ -222,17 +226,12 @@ export class WebServer implements WebEndpoint {
     this.renaming.add(row.id)
     try {
       if (row.name === name) return json(res, 200, { name, renamesLeft: this.renamesLeft(row) })
-      const counts = !!row.name
-      if (counts && this.renamesLeft(row) <= 0) {
-        throw new HttpError(429, 'Monthly name change limit reached', {}, { code: 'rename_limit', renamesLeft: '0' })
-      }
+      if (this.renamesLeft(row) <= 0) throw new HttpError(429, 'Monthly name change limit reached', {}, { code: 'rename_limit', renamesLeft: '0' })
       // Every attempt costs a model call, so it shares the visitor and IP limits with messages.
       this.limit([[this.perMinute, row.id], [this.perHour, row.id], [this.perIpMinute, ip], [this.perIp, ip]])
       await this.reviewName(name)
       const month = this.month()
-      const update: Partial<VisitorRow> = counts
-        ? { name, renameMonth: month, renameCount: (row.renameMonth === month ? row.renameCount ?? 0 : 0) + 1 }
-        : { name }
+      const update = { name, renameMonth: month, renameCount: (row.renameMonth === month ? row.renameCount ?? 0 : 0) + 1 }
       await this.storage.set(VISITORS, { id: row.id }, update)
       json(res, 200, { name, renamesLeft: this.renamesLeft({ ...row, ...update }) })
     } finally {
@@ -271,7 +270,7 @@ export class WebServer implements WebEndpoint {
       const visitorId = guest ? `g_${randomBytes(16).toString('base64url')}` : `v_${randomCode(8)}`
       const visitorKey = guest ? undefined : randomCode(8)
       try {
-        await this.storage.create(VISITORS, { id: visitorId, keyHash: visitorKey ? hashKey(visitorKey) : '', ...(guest ? { guest: true } : {}), ...(name ? { name } : {}), createdAt: now, lastSeenAt: now })
+        await this.storage.create(VISITORS, { id: visitorId, ...(visitorKey ? { keyHash: hashKey(visitorKey), name } : { guest: true }), createdAt: now, lastSeenAt: now })
         return { visitorId, visitorKey }
       } catch (error) {
         // The id is the primary key; a short v code can collide, so draw again.
@@ -308,33 +307,23 @@ export class WebServer implements WebEndpoint {
       }
     } else {
       const key = typeof rawKey === 'string' ? rawKey.trim().toUpperCase() : ''
-      const expected = Buffer.from(row?.keyHash || hashKey(''), 'hex'), actual = Buffer.from(hashKey(key), 'hex')
+      const expected = Buffer.from(row?.keyHash ?? hashKey(''), 'hex'), actual = Buffer.from(hashKey(key), 'hex')
       if (!row || !VISITOR_KEY.test(key) || !timingSafeEqual(expected, actual)) return fail()
     }
     await this.storage.set(VISITORS, { id: visitorId }, { lastSeenAt: now })
-    return row! as VisitorRow
+    return row
   }
 
   /** Hourly: idle guest codes expire, and identities that never chatted are dropped once idle for a day. */
   private async pruneVisitors() {
     const now = Date.now()
     await this.storage.remove(VISITORS, { guest: true, lastSeenAt: { $lte: new Date(now - this.config.guestIdleMinutes * 60_000) } })
-    const stale = await this.storage.get(VISITORS, { lastSeenAt: { $lte: new Date(now - UNUSED_VISITOR_MS) } }) as VisitorRow[]
-    for (const row of stale) {
-      if (row.chatted) continue
-      // chatted only caches this lookup, so rows from before the flag are checked against the transcript once.
-      const [message] = await this.storage.get(TABLE, { visitorId: row.id }, { limit: 1 })
-      if (message) await this.storage.set(VISITORS, { id: row.id }, { chatted: true })
-      else await this.storage.remove(VISITORS, { id: row.id })
-    }
+    await this.storage.remove(VISITORS, { chatted: null, lastSeenAt: { $lte: new Date(now - UNUSED_VISITOR_MS) } })
   }
 
   private async history(res: ServerResponse, visitor: VisitorRow) {
     const rows = await this.storage.get(TABLE, { visitorId: visitor.id }, { sort: { id: 'desc' }, limit: HISTORY_LIMIT }) as WebMessageRow[]
-    json(res, 200, {
-      visitorId: visitor.id, ...(visitorName(visitor) ? { name: visitorName(visitor) } : {}), renamesLeft: this.renamesLeft(visitor),
-      messages: rows.reverse().map(toChatMessage),
-    })
+    json(res, 200, { visitorId: visitor.id, name: visitorName(visitor), renamesLeft: this.renamesLeft(visitor), messages: rows.reverse().map(toChatMessage) })
   }
 
   private async postMessage(req: IncomingMessage, res: ServerResponse) {
@@ -366,6 +355,7 @@ export class WebServer implements WebEndpoint {
       throw new HttpError(429, 'Daily limit reached', { 'Retry-After': String(this.deps.quotaResetSeconds()) }, { code: 'daily_limit', reply: QUOTA_REPLY })
     }
     if (!accepted) throw new HttpError(503, 'Alice is not available right now')
+    if (!visitor.chatted) await this.storage.set(VISITORS, { id: visitorId }, { chatted: true })
     this.setTyping(visitorId, true)
     json(res, 202, { id: String(row.id), visitorId })
   }
@@ -414,8 +404,7 @@ export class WebServer implements WebEndpoint {
  */
 function guestName(visitorId: string) { return `访客${visitorId.slice(2, 8)}` }
 
-/** '' for a full code issued before names existed; the core then uses its default label. */
-function visitorName(row: VisitorRow) { return row.guest ? guestName(row.id) : row.name ?? '' }
+function visitorName(row: VisitorRow) { return row.guest ? guestName(row.id) : row.name }
 
 function hashKey(key: string) { return createHash('sha256').update(key).digest('hex') }
 
@@ -438,12 +427,6 @@ function normalizeVisitorId(value: unknown) {
   if (GUEST_ID.test(trimmed)) return trimmed
   const visitor = `v_${trimmed.replace(/^v_/i, '').toUpperCase()}`
   return /^v_/i.test(trimmed) && VISITOR_ID.test(visitor) ? visitor : undefined
-}
-
-/** Header preferred; the query form exists only because a browser EventSource cannot send headers. */
-function visitorKeyFrom(req: IncomingMessage, query: URLSearchParams) {
-  const header = req.headers['x-visitor-key']
-  return typeof header === 'string' ? header : query.get('visitorKey')
 }
 
 /** Only the tunnel's header is trusted: the server listens on loopback, so no client reaches it directly. */

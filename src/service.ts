@@ -239,9 +239,8 @@ export class InterludeService {
   /** Enables website visitors; until then web events and web participants are rejected. */
   attachWeb(transport: WebEndpoint) { this.webTransport = transport }
 
-  /** Website name check (roadmap 5.2); a provider without it refuses every name rather than passing it. */
+  /** Website name check (roadmap 5.2). */
   async reviewVisitorName(name: string) {
-    if (!this.narrator.reviewVisitorName) throw new Error('当前模型不支持访客姓名审查。')
     return this.narrator.reviewVisitorName({ name, characterName: this.config.storyDefaults.characterName })
   }
 
@@ -504,8 +503,8 @@ export class InterludeService {
    */
   private async ensureWebParticipant(story: InterludeStory, session: ChatIdentity, now: Date, knownExisting?: InterludeParticipant) {
     const existing = knownExisting ?? await this.findParticipant(session, story)
-    // The adapter sends the name bound to the code; a rename shows up on the next message.
-    const displayName = session.username.trim() || existing?.displayName || WEB_VISITOR_NAME
+    // The adapter always sends the name bound to the code; a rename shows up on the next message.
+    const displayName = session.username
     if (existing) {
       if (existing.displayName === displayName && existing.storyId === story.id) return existing
       await this.dbSet('interlude_participant', { id: existing.id }, { storyId: story.id, displayName, updatedAt: now })
@@ -4156,7 +4155,6 @@ export function participantKeyOf(participant: Pick<InterludeParticipant, 'platfo
   return `${participant.platform === 'web' ? 'web' : 'tg'}:${participant.userId}`
 }
 
-const WEB_VISITOR_NAME = 'API visitor'
 const WEB_VISITOR_PROFILE = 'A visitor chatting with the character through her public API. Not someone she knows personally.'
 
 function sameParticipantEndpoint(participant: InterludeParticipant, session: ChatIdentity) {

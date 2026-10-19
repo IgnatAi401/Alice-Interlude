@@ -56,7 +56,7 @@
 
 每个 Bot 共享一个主剧本，参与者有独立的资料与关系状态。默认不把其它私聊的详细资料传给当前私聊的模型请求；后台主动联系会使用受控的关系摘要。`shareParticipantDetails` 可显式开启跨参与者详细资料。
 
-管理命令只允许 `ALICE_OWNER_CHAT_ID` 对应的私聊执行，其他私聊和群聊发送的管理命令会被静默忽略。旧版的 `sharedStory.managerAccounts` 已移除，配置中保留该项会导致启动报错。群聊 `responseMode` 可设为 `always`；默认 `mention-only`。群意愿累积可用 `willingness.enabled` 单独开启。
+管理命令只允许 `ALICE_OWNER_CHAT_ID` 对应的私聊执行，其他私聊和群聊发送的管理命令会被静默忽略。群聊 `responseMode` 可设为 `always`；默认 `mention-only`。群意愿累积可用 `willingness.enabled` 单独开启。
 
 ## 模型
 
@@ -88,7 +88,7 @@
 
 ## 工具（仅主人私聊）
 
-工具默认关闭。开关不在配置文件里：在主人私聊发送 `/tools on` 开启、`/tools off` 关闭，状态存在数据库中，重启后保持（旧的 `tools.enabled` 已移除，写了会报错提示删除）。开启后，只有主人私聊的消息回合（以及命令结果回来的那一轮）能使用工具，其他私聊、群聊和后台推进都没有工具。
+工具默认关闭。开关不在配置文件里：在主人私聊发送 `/tools on` 开启、`/tools off` 关闭，状态存在数据库中，重启后保持。开启后，只有主人私聊的消息回合（以及命令结果回来的那一轮）能使用工具，其他私聊、群聊和后台推进都没有工具。
 
 - `recall`：在全部记忆里全文检索更早的细节，最多返回 `tools.recall.maxResults` 条（默认 8）。
 - `read_skill`：读取 `tools.skills.dir`（默认 `~/AliceWorkspace/skills`）下 `<名字>/SKILL.md` 的全文。每个 `SKILL.md` 开头写 `name:` 和 `description:`（`---` 包围），索引会放进提示词。
@@ -99,7 +99,7 @@
 
 ## 网站接口（public）
 
-网站接口默认关闭，关闭时不开任何端口。开关同样不在配置文件里：主人私聊发送 `/web on` 立即开启，`/web off` 立即关闭并释放端口，状态重启后保持（旧的 `web.enabled` 已移除）。下面的 `web` 配置段只管端口、路径和限流。开启后 Alice 在 `127.0.0.1:<web.port>` 提供一个通用 HTTP 接口，外网经 Cloudflare Tunnel 以 `https://api.ignat.ai/alice/api/...` 访问（见 [部署说明](DEPLOYMENT.md#5-网站接口与-cloudflare-tunnel)）。**通过这个接口来的所有对话都是 public 等级**：没有工具，只能看到公开记忆和该访客自己的记录。不需要额外的密钥或环境变量。
+网站接口默认关闭，关闭时不开任何端口。开关同样不在配置文件里：主人私聊发送 `/web on` 立即开启，`/web off` 立即关闭并释放端口，状态重启后保持。下面的 `web` 配置段只管端口、路径和限流。开启后 Alice 在 `127.0.0.1:<web.port>` 提供一个通用 HTTP 接口，外网经 Cloudflare Tunnel 以 `https://api.ignat.ai/alice/api/...` 访问（见 [部署说明](DEPLOYMENT.md#5-网站接口与-cloudflare-tunnel)）。**通过这个接口来的所有对话都是 public 等级**：没有工具，只能看到公开记忆和该访客自己的记录。不需要额外的密钥或环境变量。
 
 ```json
 {
@@ -154,9 +154,9 @@ curl 'https://api.ignat.ai/alice/api/history?visitorId=v_…' -H 'X-Visitor-Key:
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | `POST` | `/api/visitor` | `{ name, guest? }` → `201 { visitorId, visitorKey?, name, renamesLeft }`。`name` 正式身份必填、访客模式不能带；`guest: true` 为访客模式（无密码）；计入按 IP 的限流。申请后超过 24 小时没有任何请求、也从没发过消息的身份会被自动清理 |
-| `POST` | `/api/name` | `{ visitorId, visitorKey?, name }` → `200 { name, renamesLeft }`。与当前名字相同时不审查、不计次；原来没有名字的身份第一次起名不计次 |
+| `POST` | `/api/name` | `{ visitorId, visitorKey?, name }` → `200 { name, renamesLeft }`。与当前名字相同时不审查、不计次；访客码返回 403 |
 | `POST` | `/api/message` | `{ text, visitorId, visitorKey?, clientId? }` → `202 { id, visitorId }`。`text` 1–2000 字；`clientId` 用于网络重试去重 |
-| `GET` | `/api/history?visitorId=…` | 密码放请求头 `X-Visitor-Key`（访客码不需要） → `{ visitorId, name?, renamesLeft, messages: [{ id, role: 'visitor'|'alice', text, at }] }`（最近 200 条） |
+| `GET` | `/api/history?visitorId=…` | 密码只认请求头 `X-Visitor-Key`（访客码不需要） → `{ visitorId, name, renamesLeft, messages: [{ id, role: 'visitor'|'alice', text, at }] }`（最近 200 条） |
 | `GET` | `/api/events?visitorId=…&visitorKey=…` | SSE 推送 `typing {active}` 与 `message`；浏览器 EventSource 不能带请求头，所以密码放查询参数 |
 
 没带身份码、身份码或密码不对、访客码已作废都返回 401。任何网站、脚本都能调用（`Access-Control-Allow-Origin: *`）。

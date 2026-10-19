@@ -417,16 +417,6 @@ export function applyModelEnvironment(config: Config, env: NodeJS.ProcessEnv) {
 export function resolveConfig(input: unknown, env: NodeJS.ProcessEnv = {}): Config {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('config 必须是对象。')
   const { memory, ...rest } = input as Record<string, unknown>
-  const shared = rest.sharedStory as Record<string, unknown> | undefined
-  if (shared && typeof shared === 'object' && Object.hasOwn(shared, 'managerAccounts')) {
-    throw new Error('sharedStory.managerAccounts 已移除：管理命令只允许 ALICE_OWNER_CHAT_ID 对应的私聊，请删除该项。')
-  }
-  for (const [section, command] of [['tools', '/tools'], ['web', '/web']]) {
-    const value = rest[section] as Record<string, unknown> | undefined
-    if (value && typeof value === 'object' && Object.hasOwn(value, 'enabled')) {
-      throw new Error(`${section}.enabled 已移除：请删除该项，改在主人私聊发送 ${command} on 或 ${command} off（状态保存在数据库中）。`)
-    }
-  }
   const config: Config = mergeDefaults(DEFAULT_CONFIG, rest)
   if (memory !== undefined) {
     config.memory = mergeDefaults({ ...DEFAULT_MEMORY_CONFIG,

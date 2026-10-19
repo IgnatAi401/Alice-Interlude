@@ -547,8 +547,8 @@ export interface NarrativeProvider {
   decide(request: NarrativeRequest, tools?: TurnTools): Promise<NarrativeDecision>
   /** A low-frequency side analysis; absent providers leave the trigger pending. */
   analyzeAlter?(request: AlterAnalysisRequest, config: AlterSystemConfig): Promise<AlterAnalysisDecision>
-  /** Website visitor name check; absent providers make the website refuse names (fail closed). */
-  reviewVisitorName?(request: VisitorNameReviewRequest): Promise<VisitorNameReviewDecision>
+  /** Website visitor name check; a throw makes the website refuse the name (fail closed). */
+  reviewVisitorName(request: VisitorNameReviewRequest): Promise<VisitorNameReviewDecision>
 }
 
 export interface VisitorNameReviewRequest {
