@@ -1,7 +1,7 @@
 /**
  * A deliberately small, model-free willingness layer for group chat. It is
  * inspired by the local score / decay / probability pattern used by YesImBot
- * v3, but remains scoped to one HDSI group and never affects private turns,
+ * v3, but remains scoped to one group and never affects private turns,
  * Agency Window, Alter, prompts, or durable story state.
  */
 export interface GroupWillingnessConfig {

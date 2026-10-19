@@ -1,6 +1,6 @@
 import { normalizeAudience } from './memory/audience'
 import type { MemoryRef } from './memory/store'
-import { HDS_INTERLUDE_VERSION } from './meta'
+import { INTERLUDE_VERSION } from './meta'
 import { HtmlReply, Runtime, MessageSession as Session } from './runtime'
 import { InterludeService } from './service'
 import { StorySetting } from './types'
@@ -8,7 +8,7 @@ import { StorySetting } from './types'
 function missingSession(): never { throw new Error('管理命令只能在 Telegram 聊天中执行。') }
 
 export function registerCommands(ctx: Runtime, service: InterludeService) {
-  ctx.command('interlude', 'HDS Interlude：私聊故事测试与管理命令')
+  ctx.command('interlude', 'Interlude：私聊故事测试与管理命令')
 
   const startStoryFromConfig = async (session: Session) => {
     if (!requireManager(service, session)) return '无权限：手动启动共享主剧本只允许主人私聊。'
@@ -40,7 +40,7 @@ export function registerCommands(ctx: Runtime, service: InterludeService) {
       return { html: [
         `🟢 <b>Alice 在线</b>`,
         '',
-        `<b>版本</b>　<code>${HDS_INTERLUDE_VERSION}</code>`,
+        `<b>版本</b>　<code>${INTERLUDE_VERSION}</code>`,
         `<b>已运行</b>　${formatDuration(process.uptime())}`,
         `<b>本机时间</b>　${escapeHtml(new Date().toLocaleString('zh-CN', { hour12: false }))}`,
         `<b>故事</b>　${story ? `${escapeHtml(story.setting.character.name)}（${story.status === 'active' ? '运行中' : story.status === 'paused' ? '已暂停' : escapeHtml(story.status)}）` : '尚未创建'}`,
@@ -454,9 +454,9 @@ export function registerCommands(ctx: Runtime, service: InterludeService) {
   ctx.command('interlude.database.clear', '管理员：清空本地叙事数据库；执行前会询问 y/n')
     .action(async ({ session = missingSession() }) => {
       if (!requireManager(service, session)) return '无权限：当前账号不是主人。'
-      if (!await askConfirmation(session, '即将清空 HDSI 自有数据库，剧本、记忆和状态记录都会删除。确认执行吗？(y/n)')) return '操作已取消。'
+      if (!await askConfirmation(session, '即将清空 Interlude 数据库，剧本、记忆和状态记录都会删除。确认执行吗？(y/n)')) return '操作已取消。'
       const result = await service.clearDatabase()
-      return `HDSI 数据库清空完成：处理 ${result.removed} 条记录${result.logicallyCleared ? `，其中 ${result.logicallyCleared} 条因 SQLite 锁定改为逻辑清空` : ''}。`
+      return `Interlude 数据库清空完成：处理 ${result.removed} 条记录${result.logicallyCleared ? `，其中 ${result.logicallyCleared} 条因 SQLite 锁定改为逻辑清空` : ''}。`
     })
 
   ctx.command('interlude.purge.all', '管理员：彻底重置剧本、记忆与 Canon；执行前会询问 y/n')

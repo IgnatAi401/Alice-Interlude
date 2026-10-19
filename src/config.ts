@@ -58,7 +58,7 @@ export interface ToolsConfig {
 
 export interface BlindModeConfig {
   enabled: boolean
-  /** Periodic, intentionally minimal health signal while all other HDSI logs stay hidden. */
+  /** Periodic, intentionally minimal health signal while all other logs stay hidden. */
   healthReportMinutes: number
 }
 

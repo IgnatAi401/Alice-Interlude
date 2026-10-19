@@ -101,7 +101,7 @@ export class AnthropicNarrator implements NarrativeProvider, NarrativeCompactor 
 
   /** dumpRequestsDir: diagnostic-only copy of every request body (no headers) for canary checks. */
   constructor(private ctx: Pick<Runtime, 'http' | 'logger'>, private config: ModelConfig, silentLogs = false, private dumpRequestsDir?: string) {
-    if (!silentLogs) this.logger = ctx.logger('hds-interlude')
+    if (!silentLogs) this.logger = ctx.logger('interlude')
   }
 
   async decide(request: NarrativeRequest, tools?: TurnTools): Promise<NarrativeDecision> {
@@ -476,7 +476,7 @@ export function stableSystemPrompt(mainPrompt: string | undefined, formatPrompt:
   // 格式/现实性合约与可编辑文风明确分段，避免文风提示无意间削弱时间和 JSON 约束。
   return [
     'FORMAT AND REALITY CONTRACT (fixed by the bot; do not change it):',
-    'You are the main narrative author of HDS Interlude. Continue a long-running life script whose center of gravity is always the protagonist and her own unfolding life.',
+    'You are the main narrative author of Interlude. Continue a long-running life script whose center of gravity is always the protagonist and her own unfolding life.',
     'Return one JSON object with a continuous prose field named script, followed by only the structured fields that the current phase permits.',
     'The input is assembled in order: canonical setting; durable settingOverlay, overlayEvolution and durableFacts; chronological recentScript; live state and participant context; current phase instructions; authoritative interval and currentEvent; current images. Read these blocks together. The currentParticipant supplies the private user profile and relationship; the shared canon never contains another participant’s private profile.',
     'The script must cover the supplied interval and stop at the supplied now timestamp. currentEvent is the only source of what is happening now. Historical entries never become a new event.',
@@ -590,11 +590,6 @@ function repetitionGuardInstruction(request: NarrativeRequest) {
   for (let index = counts.length - 1; index >= 0 && counts[index] === last; index--) streak++
   if (streak < 2) return ''
   return `BUBBLE COUNT NOTE: her last ${streak} replies in this chat were each exactly ${last} bubbles. That is a habit of the text, not of the person. Let this reply's length and number of bubbles come only from what she wants to say now; one bubble, or a different number, is fine.`
-}
-
-export function systemPrompt(phase: NarrativeRequest['phase'], mainPrompt: string | undefined, formatPrompt: string | undefined, fixedPrompt: string, baseStylePrompt: string, storyStylePrompt: string, refreshContinuity = false, alterEnabled = false, agencyEnabled = false, perspectiveEnabled = false, outputRecovery = false) {
-  return [stableSystemPrompt(mainPrompt, formatPrompt, fixedPrompt, baseStylePrompt), storyStylePrompt,
-    turnInstructions(phase, refreshContinuity, alterEnabled, agencyEnabled, perspectiveEnabled, outputRecovery)].filter(Boolean).join('\n')
 }
 
 /** Wraps visitor records as quoted data (S10). '<' is escaped so no record can close the wrapper. */
@@ -893,7 +888,7 @@ function alterAnalysisPrompt(customPrompt = '') {
 
 function compactionPrompt(fixedPrompt: string, compactionMainPrompt = '', compactionFixedPrompt = '', compactionStylePrompt = '') {
   return [
-    'You are the low-cost continuity editor for HDS Interlude.',
+    'You are the low-cost continuity editor for Interlude.',
     'Compress only events that have already happened. Never invent future events.',
     'Return JSON with optional scene, arc, facts, and statePatches.',
     '{"scene":{"hook":"short active-scene hook","summary":"compact scene summary","close":false,"presence":[{"name":"named supporting character","status":"present|off-scene|expected","basis":"explicit observed transition","sourceEntryIds":[1]}]},"arc":{"title":"...","summary":"..."},"facts":[{"scope":"character|world|relationship|event|promise","participantId":"optional relationship id","content":"...","importance":0.0,"confidence":0.0,"unresolved":false,"sourceEntryIds":[1],"audience":"private|public"}],"statePatches":[{"target":"character|perspective|world|relationship","participantId":"relationship id when target is relationship","path":"...","proposedValue":"...","evidence":"...","confidence":0.0,"impact":"minor|major","sourceEntryIds":[1],"audience":"private|public"}]}',
@@ -920,7 +915,7 @@ function factConsolidationPrompt() {
 
 function publicDigestPrompt(compactionStylePrompt = '') {
   return [
-    'You are the editor of the PUBLIC continuity layer for HDS Interlude, a long-running life narrative.',
+    'You are the editor of the PUBLIC continuity layer for Interlude, a long-running life narrative.',
     'Everything you write may be shown to strangers on a public website or channel. Every supplied block is already public material.',
     'Use only the supplied material. Do not guess at, hint at, or fill gaps about anything that is not written there: private life, the owner, other people, locations or schedules.',
     'Compress only events that already happened. Never invent future events.',
@@ -934,7 +929,7 @@ function publicDigestPrompt(compactionStylePrompt = '') {
 
 function overlayCompactionPrompt(fixedPrompt: string, compactionFixedPrompt = '', compactionStylePrompt = '') {
   return [
-    'You are a continuity editor compressing older setting evolution for HDS Interlude.',
+    'You are a continuity editor compressing older setting evolution for Interlude.',
     'All supplied changes already happened. Preserve their present effect, causal evolution, explicit major events, and unresolved consequences. Do not invent events.',
     'Return JSON only: {"summary":"concise current-state evolution","majorEvents":["important enduring event or turning point"]}.',
     'Short-window compression keeps concrete progression and causes. Long-window compression keeps stable current state and major turning points while merging repetitive detail.',

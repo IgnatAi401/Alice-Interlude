@@ -1,80 +1,21 @@
-# Alice HDSI Telegram Bot
+# Alice · Interlude
 
-独立运行在 macOS 的 Telegram 聊天机器人。复用 HDSI 的持续叙事、记忆、人物变化、延迟回复、自动生活推进、群聊和管理命令逻辑；使用 Node 自带的 SQLite 保存数据。
+Alice 是一个单实例的持续叙事角色，运行在一台 Mac 上。她有自己的时间线、记忆和生活节奏，不只是一问一答的聊天机器人。底层系统叫幕间（Interlude）。
 
-模型任务统一使用 Anthropic 官方 Messages API，包括主叙事、记忆压缩、人物变化摘要和 Alter 氛围分析。每次请求都显式设置 `thinking: { "type": "disabled" }`。
+## 实现了什么
 
-## 启动
+- **持续叙事**：每轮对话都写入剧本时间线，场景和剧情弧会自动压缩成摘要，人物设定随经历慢慢变化。
+- **记忆系统**：长期事实可以检索（SQLite FTS5 全文索引），每晚自动整理，合并重复、淘汰过时内容。每条记忆都标明谁能看到（主人私密、公开、某位访客），由同一套受众规则统一把关。
+- **自主生活**：没人说话时，她也会按生活节奏推进自己的日常，会延迟回复、记下计划，必要时主动联系主人。
+- **氛围惯性（Alter）与行动窗口（Agency）**：情绪和氛围有惯性，主动行为受现实容量约束。
+- **多渠道**：Telegram 私聊与群聊（群里按意愿决定是否发言），以及网站聊天页（访客码、限流、SSE 推送）。
+- **分级权限**：主人、访客、群成员分属不同等级，每个等级可用的工具和可见的记忆各不相同。访客只能拿到按白名单构造的公开上下文。
+- **轻量电脑操控**：主人私聊可开启工具，Alice 提出的命令要经主人点按钮审批才会执行，执行结果再由她汇报。
+- **图片理解**：Telegram 图片直接作为多模态输入。
+- **提示词缓存**：请求按变化频率分层，并设置缓存断点。
 
-需要 macOS、Node.js 24.x，以及 pnpm。本项目已有 `pnpm-lock.yaml`，请使用同一套工具。
+## 技术栈
 
-```sh
-cd /Users/ignat/Developer/Alice-Interlude
-pnpm install --frozen-lockfile
-cp .env.example .env
-cp config.example.yaml config.yaml
-```
+TypeScript · Node 24（内置 SQLite）· Anthropic Messages API（兼容协议的模型均可）· Telegram Bot API
 
-编辑 `.env`，填写 Telegram 和模型相关的环境变量：
-
-```dotenv
-TELEGRAM_BOT_TOKEN=你的BotFather令牌
-TELEGRAM_CHAT_IDS=你的私聊chat_id
-ALICE_OWNER_CHAT_ID=你的私聊chat_id
-LLM_BASE_URL=https://api.deepseek.com/anthropic   # 留空为 Anthropic 官方
-LLM_API_KEY=你的模型服务密钥
-LLM_MODEL=deepseek-flash
-```
-
-模型服务只要兼容 Anthropic Messages 协议即可（Anthropic 官方、DeepSeek 等），其余 `LLM_*` 变量见 `.env.example` 和[配置指南](docs/guide/CONFIGURATION.md)。
-
-多个 chat id 用逗号分隔；私聊通常为正整数，群聊为负整数。空白名单会阻止启动。`ALICE_OWNER_CHAT_ID` 是主人自己的私聊 chat id，必须同时出现在 `TELEGRAM_CHAT_IDS` 中，否则无法启动。`.env` 只是 Node 启动时加载环境变量的便利方式，也可以由终端直接提供这些变量。
-
-在 `config.yaml` 中填写 `storyDefaults.characterProfile`，按需修改时区和用户资料。示例开启了 `runtime.autoCreate`，第一次获授权私聊会创建故事；示例关闭主动联系，角色仍可回复当前消息并进行后台生活推进。
-
-```sh
-pnpm build
-pnpm start
-```
-
-给 Bot 发私聊即可。按 `Ctrl+C` 停止；电脑关机或睡眠期间不能持续收发。开发时可运行 `pnpm dev`。无需打开本机端口，程序通过 Telegram 长轮询接收消息。
-
-不知道 chat id 时，先填 Bot token、给 Bot 发一句话，再按 [部署说明](docs/guide/DEPLOYMENT.md) 获取。运行中的 Bot 请先停止，再获取 ID。
-
-## 配置和管理
-
-凭据和访问白名单仅从环境变量读取。模型设置也可以放在环境变量中（`LLM_*`）。`config.yaml` 保存角色、调度设置，以及获授权聊天的可选人物资料。配置改动需要重启程序。
-
-群聊除了在 `TELEGRAM_CHAT_IDS` 中获授权，还需要在 `telegram.groupChats` 中启用；默认只在被提及时触发。群成员无须逐个加入私聊白名单，管理命令只在主人私聊（`ALICE_OWNER_CHAT_ID`）中执行。
-
-数据保存在 `data/interlude.sqlite`，包含剧本、参与者、记忆、长期事实、计划、人物变化和 Telegram 接收位置。该实现使用独立数据库格式，不自动导入旧实例数据库。
-
-常用命令：`/doctor`、`/status`、`/timeline`、`/memory`、`/pause`、`/resume`。完整说明见 [命令说明](docs/guide/COMMANDS.md)。
-
-Telegram 照片和受支持的图片文件会通过 Telegram 下载后作为 Anthropic 原生 base64 图片块发送；单图限制 4 MiB，一轮最多三张。语音会记录收到附件的事实，当前没有转写功能。可选网页观察使用 macOS 本机 Google Chrome，默认关闭。
-
-## 提示词和缓存
-
-实际发送顺序按变化频率组织：
-
-1. 固定输出规则、基础任务和写作文风。
-2. 角色初始设定（Canon）。
-3. 缓慢变化的人物设定、长期事实、记忆和变化摘要，记录采用固定排序。
-4. 按时间追加的已发生剧本。
-5. 当前场景、参与者、状态和本轮策略。
-6. 当前时间、当前消息和图片。
-
-前三层使用 `1h` 缓存断点，已发生剧本使用 `5m` 断点，总计最多四个；当前时间和事件位于缓存之后。主请求把每条历史记录作为独立块，追加新历史时保留旧块的文本。压缩和 Alter 也把固定规则放在请求前部。
-
-缓存命中仍取决于模型的最小缓存 token 数、前缀是否完全一致、有效期和历史截断。代码记录 `cache_creation_input_tokens` 与 `cache_read_input_tokens`，可据此观察实际效果；无法承诺每次完全命中。协议依据 [Anthropic 缓存说明](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)。
-
-## 开发检查
-
-```sh
-pnpm typecheck
-pnpm build
-```
-
-构建会先清理 `lib/` 再生成 JavaScript，防止旧文件残留。
-
-更多说明见 [文档索引](docs/README.md)：[新手指南](docs/guide/BEGINNER.md)、[配置指南](docs/guide/CONFIGURATION.md)、[架构](docs/design/ARCHITECTURE.md)、[Alter](docs/design/ALTER_SYSTEM.md)、[Agency](docs/design/AGENCY_WINDOW.md)。
+设计细节见 [docs/](docs/README.md)。

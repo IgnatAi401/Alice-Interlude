@@ -39,7 +39,7 @@ interface BufferedUserMessage {
   content: string
   occurredAt: Date
   supersededIntents: NarrativeIntent[]
-  /** Short-lived source links only; never written to HDSI storage. */
+  /** Short-lived source links only; never written to storage. */
   imageSources: string[]
 }
 
@@ -160,7 +160,7 @@ export class InterludeService {
 
   constructor(public ctx: Runtime, public config: Config,
     private readonly telegramEnvironment: TelegramEnvironment = readTelegramEnvironment()) {
-    this.serviceLogger = ctx.logger('hds-interlude')
+    this.serviceLogger = ctx.logger('interlude')
     this.switches = new RuntimeSwitches(ctx.database)
     this.quota = new DailyQuota(ctx.database, () => this.config.storyDefaults.timezone)
     this.store = new MemoryStore({
@@ -369,7 +369,7 @@ export class InterludeService {
   }
 
   async createStory(session: ChatIdentity, name?: string) {
-    if (!this.canHandleSession(session) && !this.canHandleGroupSession(session)) throw new Error('This session is not allowed to use HDS Interlude.')
+    if (!this.canHandleSession(session) && !this.canHandleGroupSession(session)) throw new Error('This session is not allowed to use Interlude.')
     // The single story is anchored to the Telegram bot; a website visitor can join it but never start it.
     if (session.platform !== 'telegram') throw new Error('Only Telegram can start the story.')
     const existing = await this.findStory(session)
@@ -788,7 +788,7 @@ export class InterludeService {
    * Clear narrative tables while keeping the open database and polling offset.
    */
   async clearDatabase() {
-    if (this.databaseResetting) throw new Error('HDSI 数据库清空已经在进行中。')
+    if (this.databaseResetting) throw new Error('Interlude 数据库清空已经在进行中。')
     this.databaseResetting = true
     this.invalidateBufferedNarratives()
     try {
@@ -816,18 +816,18 @@ export class InterludeService {
             : table === 'interlude_participant'
               ? { status: 'paused', profile: '', relationship: '', state: emptyParticipantState() }
               : table === 'interlude_script_entry'
-                ? { kind: 'redacted', actor: 'system', content: '[HDSI 数据库已清空]', metadata: { redacted: true } }
+                ? { kind: 'redacted', actor: 'system', content: '[Interlude 数据库已清空]', metadata: { redacted: true } }
                 : table === 'interlude_memory'
-                  ? { status: 'deleted', content: '[HDSI 数据库已清空]' }
+                  ? { status: 'deleted', content: '[Interlude 数据库已清空]' }
                   : table === 'interlude_intent'
-                    ? { status: 'cancelled', summary: '[HDSI 数据库已清空]' }
+                    ? { status: 'cancelled', summary: '[Interlude 数据库已清空]' }
                     : table === 'interlude_scene' || table === 'interlude_arc'
                       ? { status: 'closed', hook: '', summary: '', entryCount: 0, sceneCount: 0 }
                       : table === 'interlude_fact'
-                        ? { status: 'superseded', content: '[HDSI 数据库已清空]' }
+                        ? { status: 'superseded', content: '[Interlude 数据库已清空]' }
                         : table === 'interlude_web_observation'
-                          ? { status: 'deleted', url: '', title: '', excerpt: '', summary: '[HDSI 数据库已清空]' }
-                        : { status: 'rejected', proposedValue: '[HDSI 数据库已清空]', evidence: '' }
+                          ? { status: 'deleted', url: '', title: '', excerpt: '', summary: '[Interlude 数据库已清空]' }
+                        : { status: 'rejected', proposedValue: '[Interlude 数据库已清空]', evidence: '' }
           await this.dbSet(table, { id }, fallback)
           logicallyCleared++
         }
@@ -1262,14 +1262,14 @@ export class InterludeService {
       let page: any
       try {
         page = await puppeteer.page()
-        await page.setContent(`<img id="hdsi-image" src="${dataUri}" style="display:block;max-width:4096px;max-height:4096px">`, { waitUntil: 'load', timeout: 10_000 })
+        await page.setContent(`<img id="alice-image" src="${dataUri}" style="display:block;max-width:4096px;max-height:4096px">`, { waitUntil: 'load', timeout: 10_000 })
         await page.evaluate(() => new Promise<void>(resolve => {
-          const image = document.querySelector('#hdsi-image') as HTMLImageElement | null
+          const image = document.querySelector('#alice-image') as HTMLImageElement | null
           if (!image || image.complete) return resolve()
           image.addEventListener('load', () => resolve(), { once: true })
           image.addEventListener('error', () => resolve(), { once: true })
         }))
-        const element = await page.$('#hdsi-image')
+        const element = await page.$('#alice-image')
         if (!element) return undefined
         const buffer = Buffer.from(await element.screenshot({ type: 'png' }))
         if (!buffer.length || buffer.length > 4 * 1024 * 1024) return undefined
@@ -1284,7 +1284,7 @@ export class InterludeService {
   }
 
   /** Prevent timers or already-returning model calls from resurrecting data
-   * after an administrator resets the story or clears HDSI tables. */
+   * after an administrator resets the story or clears Interlude tables. */
   private invalidateBufferedNarratives(storyId?: string) {
     for (const [key, turn] of this.bufferedNarrativeTurns) {
       if (storyId && turn.storyId !== storyId) continue
@@ -3962,7 +3962,7 @@ export class InterludeService {
     if (rank[logging.level] < rank[level]) return
     const output = logging.format === 'layered'
       ? formatLayeredLog({
-        level, protagonist: 'HDSI', message, args, standalone: true,
+        level, protagonist: 'Interlude', message, args, standalone: true,
         colors: logging.colors !== false, colorTheme: logging.colorTheme ?? 'dark', kaomoji: logging.kaomoji !== false,
       })
       : `[系统] ${renderLogMessage(message, args)}`
@@ -3979,7 +3979,7 @@ export class InterludeService {
   private reportBlindModeHealth() {
     const status = this.blindModeHealthIssue || this.databaseResetting ? '需关注' : '正常'
     const scheduler = this.backgroundStarted ? '运行中' : '未就绪'
-    // This is the sole HDSI record emitted in Blind Mode. It deliberately
+    // This is the sole record emitted in Blind Mode. It deliberately
     // carries no story, account, model, message, or failure-detail content.
     this.serviceLogger.info(`[失明模式] 运行状态=${status} 后台任务=${scheduler}`)
     this.blindModeHealthIssue = false

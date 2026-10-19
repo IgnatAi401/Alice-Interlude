@@ -2,7 +2,6 @@ import { format as formatText } from 'node:util'
 import { NarrativePhase } from './types'
 
 export type InterludeLogLevel = 'error' | 'warn' | 'info' | 'debug'
-export type InterludeLogFormat = 'compact' | 'detailed' | 'layered'
 export type InterludeLogColorTheme = 'dark' | 'light'
 export type InterludeLogAction =
   | 'receive' | 'send' | 'processing' | 'complete' | 'trigger' | 'emotion'
@@ -128,7 +127,7 @@ export function formatLayeredLog(input: LayeredLogInput) {
   const face = input.kaomoji === false ? SYMBOLS[action] : KAOMOJI[action]
   const palette = COLOR_PALETTES[input.colorTheme ?? 'dark']
   const header = root
-    ? `${paint(category, categoryColor(action, input.phase, text, palette), input.colors)} ${paint(input.protagonist || 'HDSI', palette.protagonist, input.colors)}`
+    ? `${paint(category, categoryColor(action, input.phase, text, palette), input.colors)} ${paint(input.protagonist || 'Interlude', palette.protagonist, input.colors)}`
     : branch
   const main = `${header}${header ? ' ' : ''}${paint(face, actionColor(action, palette), input.colors)} ${paint(summary, summaryColor(action, input.level, palette), input.colors)}`.trimEnd()
   if (!details.fields.length) return main

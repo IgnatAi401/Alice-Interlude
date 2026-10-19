@@ -1,5 +1,5 @@
 import { BrowserConfig, resolveBrowserConfig } from './config'
-import { HDS_INTERLUDE_VERSION } from './meta'
+import { INTERLUDE_VERSION } from './meta'
 import { Runtime, Time } from './runtime'
 import { BrowserIntentDraft, IntentDraft, InterludeStory, NarrativeIntent, NarrativeRequest, ScriptEntryDraft, WebObservation } from './types'
 import { clip } from './util'
@@ -134,7 +134,7 @@ export class WebObserver {
       let page: any
       try {
         page = await puppeteer.page()
-        await page.setUserAgent(`Mozilla/5.0 (compatible; Alice-HDSI/${HDS_INTERLUDE_VERSION})`)
+        await page.setUserAgent(`Mozilla/5.0 (compatible; Alice-Interlude/${INTERLUDE_VERSION})`)
         const resolvesPublicly = createPublicHostCheck()
         if (!await resolvesPublicly(target)) throw new Error('目标域名解析到了内网地址。')
         await page.setRequestInterception(true)

@@ -83,6 +83,3 @@ export function calendarDayKey(value: Date, timezone: string) {
   }).format(value)
 }
 
-export function timeFormatterCacheSize() {
-  return formatterCache.size
-}
